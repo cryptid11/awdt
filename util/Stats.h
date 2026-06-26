@@ -66,7 +66,7 @@ namespace wdt {
 
 // Note that atomic operations across threads are actually quite slow
 // so we use ThreadLocal storage instead and swipe the aggregates
-typedef volatile int64_t vint64_t;
+using vint64_t = volatile int64_t;
 
 /**
  * Atomic add
@@ -550,8 +550,8 @@ class ThreadLocalSwapableNode : public SwapableNode {
 };
 
 // ThreadLocal versions of Histogram and Counter.
-typedef ThreadLocalSwapableNode<Histogram, int32_t> ThreadLocalHistogram;
-typedef ThreadLocalSwapableNode<Counter, double> ThreadLocalCounter;
+using ThreadLocalHistogram = ThreadLocalSwapableNode<Histogram, int32_t>;
+using ThreadLocalCounter = ThreadLocalSwapableNode<Counter, double>;
 
 /**
  * PeriodicCounters, given a list of SwapableNode counters, will run a

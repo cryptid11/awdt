@@ -18,7 +18,7 @@
 namespace facebook {
 namespace wdt {
 
-typedef struct addrinfo* addrInfoList;
+using addrInfoList = struct addrinfo*;
 
 class ServerSocket : public IServerSocket {
  public:

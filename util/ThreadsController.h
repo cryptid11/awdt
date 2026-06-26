@@ -351,7 +351,7 @@ class ThreadsController {
   /// Total number of threads managed by the thread controller
   int totalThreads_;
 
-  typedef std::unique_lock<std::mutex> GuardLock;
+  using GuardLock = std::unique_lock<std::mutex>;
 
   /// Mutex used in all of the thread controller methods
   mutable std::mutex controllerMutex_;

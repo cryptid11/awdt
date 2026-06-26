@@ -150,6 +150,6 @@ template <class Tag>
 std::atomic<uint64_t> SignalSubscriber<Tag>::globalEpoch_ = {};
 
 struct ReportPerfTag {};
-typedef SignalSubscriber<ReportPerfTag> ReportPerfSignalSubscriber;
+using ReportPerfSignalSubscriber = SignalSubscriber<ReportPerfTag>;
 }  // namespace wdt
 }  // namespace facebook
