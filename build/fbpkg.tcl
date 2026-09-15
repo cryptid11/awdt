@@ -31,7 +31,7 @@ proc sendEmail {reason} {
     puts $f "To: $TO"
     puts $f "Subject: WDT build: ${type}${EXTRA}: $msg ($reason)"
     puts $f {Content-type: text/plain; charset="UTF-8"}
-    puts $f ""; # seperate headers from body
+    puts $f ""; # separate headers from body
     puts $f "filtered log, full log at https://fburl.com/wdt_${type}_builds"
     puts $f "and $LOGF on the machine"
     close $f
