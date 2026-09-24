@@ -19,7 +19,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.net.wifi.WifiManager
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
@@ -156,7 +158,7 @@ class MainActivity : Activity() {
             try {
                 val server = ShareServer(
                     address.ip, sources.directory, sources.files, sources.totalBytes,
-                    options = { WdtOptions().apply { progressReportIntervalMillis = 250 } },
+                    options = { transferOptions().apply { progressReportIntervalMillis = 250 } },
                 )
                 stoppable = server
                 val link = server.link.toString()
@@ -257,7 +259,7 @@ class MainActivity : Activity() {
         executor.execute {
             try {
                 openSources(uris).use { sources ->
-                    val options = WdtOptions().apply { progressReportIntervalMillis = 250 }
+                    val options = transferOptions().apply { progressReportIntervalMillis = 250 }
                     val report = push.run(
                         sources.directory, sources.files, sources.totalBytes, deviceName(),
                         options, progressListener,
@@ -318,7 +320,7 @@ class MainActivity : Activity() {
         val staging = freshDir(File(filesDir, "incoming"))
         executor.execute {
             try {
-                val options = WdtOptions().apply {
+                val options = transferOptions().apply {
                     progressReportIntervalMillis = 250
                     maxAcceptRetries = 300 // the sender connects right away: 30 s
                 }
@@ -390,7 +392,7 @@ class MainActivity : Activity() {
             return
         }
         val staging = freshDir(File(filesDir, "incoming"))
-        val options = WdtOptions().apply {
+        val options = transferOptions().apply {
             progressReportIntervalMillis = 250
             maxAcceptRetries = 6000 // with 100 ms accept timeouts: wait ~10 min
         }
@@ -429,7 +431,7 @@ class MainActivity : Activity() {
         executor.execute {
             try {
                 openSources(uris).use { sources ->
-                    val options = WdtOptions().apply { progressReportIntervalMillis = 250 }
+                    val options = transferOptions().apply { progressReportIntervalMillis = 250 }
                     WdtSender(url, sources.directory, options, sources.files).use { sender ->
                         stoppable = TransferStopper(sender)
                         val report = sender.transfer(progressListener)
@@ -462,7 +464,7 @@ class MainActivity : Activity() {
             try {
                 for (i in 1..20) File(src, "file$i.bin").writeBytes(Random.nextBytes(1 shl 20))
                 val files = src.listFiles()!!.map { WdtSender.SourceFile(it.name) }
-                val options = { WdtOptions().apply { progressReportIntervalMillis = 100 } }
+                val options = { transferOptions().apply { progressReportIntervalMillis = 100 } }
                 server = ShareServer("127.0.0.1", src, files, 20L shl 20, options, bindAddress = "127.0.0.1")
                 val serving = executor.submit {
                     server.serve(object : ShareServer.Listener {
@@ -674,7 +676,35 @@ class MainActivity : Activity() {
         listOf(shareButton, downloadButton, computerButton, selfTestButton, searchButton, addressButton) +
             (0 until nearbyList.childCount).map { nearbyList.getChildAt(it) }
 
+    /**
+     * Wi-Fi can stall for seconds (power saving, interference): with WDT's
+     * default 5 s socket timeouts, connections would be dropped and reopened.
+     */
+    private fun transferOptions() = WdtOptions().apply {
+        readTimeoutMillis = 30_000
+        writeTimeoutMillis = 30_000
+    }
+
+    /** Keeps the Wi-Fi radio (and the CPU) fully awake during transfers. */
+    private val wifiLock by lazy {
+        val wifi = applicationContext.getSystemService(WifiManager::class.java)
+        @Suppress("DEPRECATION")
+        val mode = if (Build.VERSION.SDK_INT >= 29) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifi.createWifiLock(mode, "wdt:transfer").apply { setReferenceCounted(false) }
+    }
+    private val wakeLock by lazy {
+        getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wdt:transfer")
+            .apply { setReferenceCounted(false) }
+    }
+
     private fun setBusy() {
+        wifiLock.acquire()
+        wakeLock.acquire(60 * 60 * 1000L) // released when idle; at most an hour
         for (b in actionButtons()) b.isEnabled = false
         stopButton.visibility = View.VISIBLE
         progressBar.visibility = View.VISIBLE
@@ -685,6 +715,8 @@ class MainActivity : Activity() {
 
     private fun setIdle() {
         stoppable = null
+        if (wifiLock.isHeld) wifiLock.release()
+        if (wakeLock.isHeld) wakeLock.release()
         for (b in actionButtons()) b.isEnabled = true
         stopButton.visibility = View.GONE
         progressBar.visibility = View.GONE

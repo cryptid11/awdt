@@ -368,6 +368,10 @@ std::unique_ptr<Receiver> startReceiver(const fs::path& dir,
     WdtOptions& options = receiver->getWdtOptions();
     options.static_ports = staticPorts;
     options.max_accept_retries = 300;  // the app connects right away: 30 s
+    // Phones' Wi-Fi can stall for seconds (power saving): don't drop the
+    // connections after WDT's default 5 s
+    options.read_timeout_millis = 30000;
+    options.write_timeout_millis = 30000;
     options.enable_download_resumption = false;
     const WdtTransferRequest& ready = receiver->init();
     if (ready.errorCode != OK && ready.errorCode != FEWER_PORTS) {

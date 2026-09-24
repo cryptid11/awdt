@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Wi-Fi / wake locks: no radio power saving during transfers -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application
         android:label="WDT"
         android:theme="@style/AppTheme">
