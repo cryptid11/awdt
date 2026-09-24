@@ -22,7 +22,7 @@ TEST(BasicTest, ReceiverAcceptTimeout) {
   opts.accept_timeout_millis = 1;
   opts.max_accept_retries = 1;
   opts.max_retries = 1;
-  WdtTransferRequest req(0, 2, "/tmp/wdtTest");
+  WdtTransferRequest req(0, 2, tmpDir() + "/wdtTest");
   req.wdtNamespace = "foo";
   EXPECT_EQ(OK, wdt.wdtReceiveStart("foo", req));
   EXPECT_EQ(CONN_ERROR, wdt.wdtReceiveFinish("foo"));

@@ -16,6 +16,10 @@ namespace wdt {
 uint32_t rand32();
 uint64_t rand64();
 
+/// Directory for test scratch files: $TMPDIR if set, else /tmp
+/// (Android has no /tmp, use e.g. TMPDIR=/data/local/tmp)
+std::string tmpDir();
+
 class TemporaryDirectory {
  public:
   TemporaryDirectory();

@@ -1,6 +1,7 @@
 #include <folly/String.h>  // for humanify
 #include <folly/lang/Bits.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <wdt/Protocol.h>

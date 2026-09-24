@@ -9,6 +9,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <wdt/WdtResourceController.h>
+#include <wdt/test/TestCommon.h>
 
 using namespace std;
 
@@ -21,7 +22,7 @@ class WdtResourceControllerTest : public WdtResourceController {
   const int startPort = 24689;
   const int numPorts = 8;
   const string hostName = "localhost";
-  const string directory = "/tmp/wdt_resoure_controller_test";
+  const string directory = tmpDir() + "/wdt_resoure_controller_test";
   const int numFiles = 10;
   using SenderPtr = shared_ptr<Sender>;
   using ReceiverPtr = shared_ptr<Receiver>;

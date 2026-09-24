@@ -52,7 +52,6 @@
 #include <folly/ThreadLocal.h>
 #include <sys/types.h>
 
-#include <boost/noncopyable.hpp>
 #include <cmath>
 #include <condition_variable>
 #include <iostream>
@@ -120,6 +119,15 @@ inline static int64_t atomic_get(vint64_t& data) {
  * it requires the presence of a visible copy constructor - yet (thankfully!)
  * doesn't call it so we need a replacement for boost::noncopyable
  */
+/// Minimal stand-in for boost::noncopyable (avoids a Boost dependency)
+class noncopyable {
+ protected:
+  noncopyable() = default;
+  ~noncopyable() = default;
+  noncopyable(const noncopyable&) = delete;
+  noncopyable& operator=(const noncopyable&) = delete;
+};
+
 class crashifcopied {
  public:
   [[noreturn]] crashifcopied(const crashifcopied& /*c*/) {
@@ -397,7 +405,7 @@ class Histogram : public Counter {
  *
  * Clients should be using a sub-classes, such as ThreadLocalSwapableNode.
  */
-class SwapableNode : private boost::noncopyable {
+class SwapableNode : private noncopyable {
  protected:
   SwapableNode() : ptr_(0) {
   }
@@ -433,7 +441,7 @@ class SwapableNode : private boost::noncopyable {
  * of type P.
  */
 template <class C, class P>
-class Hold2 : boost::noncopyable {
+class Hold2 : noncopyable {
  public:
   Hold2(C* result, const P& p) : datav_{C(p), C(p)}, result_(result) {
     VLOG(100) << "new Hold2 " << this;
@@ -560,7 +568,7 @@ using ThreadLocalCounter = ThreadLocalSwapableNode<Counter, double>;
  * func() argument to SwapableNode. This class can be used, for example, to
  * periodically collect and print counters.
  */
-class PeriodicCounters : private boost::noncopyable {
+class PeriodicCounters : private noncopyable {
  public:
   explicit PeriodicCounters(const std::vector<SwapableNode*>& counters)
       : counters_(counters) {

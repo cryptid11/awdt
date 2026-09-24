@@ -9,7 +9,8 @@
 #include <wdt/ErrorCodes.h>
 #include <wdt/test/TestCommon.h>
 
-#include <boost/filesystem.hpp>
+#include <cstdlib>
+#include <filesystem>
 #include <mutex>
 #include <random>
 
@@ -29,16 +30,21 @@ uint32_t rand32() {
   return static_cast<uint32_t>(rand64());
 }
 
+std::string tmpDir() {
+  const char* dir = getenv("TMPDIR");
+  return (dir && *dir) ? dir : "/tmp";
+}
+
 TemporaryDirectory::TemporaryDirectory() {
-  char dir[] = "/tmp/wdtTest.XXXXXX";
-  if (!mkdtemp(dir)) {
+  std::string dir = tmpDir() + "/wdtTest.XXXXXX";
+  if (!mkdtemp(&dir[0])) {
     WPLOG(FATAL) << "unable to make " << dir;
   }
   dir_ = dir;
 }
 
 TemporaryDirectory::~TemporaryDirectory() {
-  boost::filesystem::remove_all(dir_);
+  std::filesystem::remove_all(dir_);
 }
 }  // namespace wdt
 }  // namespace facebook

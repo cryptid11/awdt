@@ -198,8 +198,13 @@ WdtOptions& Wdt::getWdtOptions() {
   return options_;
 }
 
-static std::unordered_map<std::string, std::unique_ptr<Wdt>> s_wdtMap;
-static std::mutex s_mutex;
+// Intentionally never destroyed: Wdt instances still registered at exit
+// would otherwise be torn down during static destruction, possibly after
+// glog's statics they log through (bionic aborts on such use of a destroyed
+// mutex). Call releaseWdt() for an orderly shutdown.
+static auto& s_wdtMap =
+    *new std::unordered_map<std::string, std::unique_ptr<Wdt>>();
+static auto& s_mutex = *new std::mutex();
 
 // private version
 Wdt& Wdt::getWdtInternal(const std::string& appName,

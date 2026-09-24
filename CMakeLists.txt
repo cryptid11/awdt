@@ -43,7 +43,13 @@ set(WDT_USE_SYSTEM_FOLLY Off CACHE BOOL "Use folly library from system (default 
 # So hardcoding for now:
 #set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_BUILD_TYPE Release)
-set(CMAKE_CXX_FLAGS "-msse4.2 -mpclmul")
+# SSE4.2/PCLMUL speed up crc32c (folly); only valid when targeting x86_64.
+# (folly's SSE4.2 code also uses PCLMUL, so the two go together.)
+# Append rather than overwrite so cross toolchains (e.g. Android NDK) keep
+# their flags.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.2 -mpclmul")
+endif()
 #set(CMAKE_CXX_FLAGS "-msse4.2 -mpclmul -Wextra -Wsign-compare -Wunused-variable")
 #set(CMAKE_CXX_FLAGS "-msse4.2 -mpclmul -Wextra -Wsign-compare -Wunused-variable -Wconversion -Wsign-conversion")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "_bin/wdt")
@@ -77,7 +83,20 @@ if (NOT WDT_USE_SYSTEM_FOLLY)
   "${FOLLY_SOURCE_DIR}/folly/hash/detail/Crc32CombineDetail.cpp"
   "${FOLLY_SOURCE_DIR}/folly/ScopeGuard.cpp"
   "${FOLLY_SOURCE_DIR}/folly/detail/SplitStringSimd.cpp"
+  # needed by more recent folly versions:
+  "${FOLLY_SOURCE_DIR}/folly/lang/Exception.cpp"
+  "${FOLLY_SOURCE_DIR}/folly/lang/SafeAssert.cpp"
+  "${FOLLY_SOURCE_DIR}/folly/external/fast-crc32/sse_crc32c_v8s3x3.cpp"
+  "${FOLLY_SOURCE_DIR}/folly/external/fast-crc32/avx512_crc32c_v8s3x4.cpp"
   )
+  # Folly moves/removes files over time: only keep the ones present in the
+  # checked out version.
+  foreach(src ${FOLLY_CPP_SRC})
+    if (NOT EXISTS "${src}")
+      message(STATUS "folly source ${src} not present, skipping")
+      list(REMOVE_ITEM FOLLY_CPP_SRC "${src}")
+    endif()
+  endforeach()
 endif()
 
 # WDT's library proper - comes from: ls -1 *.cpp | grep -iv test
@@ -123,10 +142,11 @@ target_link_libraries(wdt wdt_min)
 
 
 
-# Folly uses boost system and filesystem
-#set(Boost_USE_STATIC_LIBS on)
-find_package(Boost COMPONENTS system filesystem REQUIRED)
-include_directories(${Boost_INCLUDE_DIRS})
+# Recent folly versions depend on fmt
+find_package(fmt CONFIG)
+if (fmt_FOUND)
+  set(FMT_LIBRARY fmt::fmt)
+endif()
 
 # We use std:: threads
 find_package(Threads) # this will set ${CMAKE_THREAD_LIBS_INIT} (ie pthreads)
@@ -135,12 +155,18 @@ find_package(Threads) # this will set ${CMAKE_THREAD_LIBS_INIT} (ie pthreads)
 # double-conversion
 find_path(DOUBLECONV_INCLUDE_DIR double-conversion/double-conversion.h)
 find_library(DOUBLECONV_LIBRARY double-conversion)
-# Glog
-find_path(GLOG_INCLUDE_DIR glog/logging.h)
-find_library(GLOG_LIBRARY glog)
 # Gflags
 find_path(GFLAGS_INCLUDE_DIR gflags/gflags.h)
 find_library(GFLAGS_LIBRARY gflags)
+# Glog (glog >= 0.7 ships a CMake package whose target carries required
+# compile definitions, use it when available)
+find_package(glog CONFIG QUIET)
+if (glog_FOUND)
+  set(GLOG_LIBRARY glog::glog)
+else()
+  find_path(GLOG_INCLUDE_DIR glog/logging.h)
+  find_library(GLOG_LIBRARY glog)
+endif()
 # GFLAGS_NAMESPACE is defined in most releases but not in all
 include(CheckCXXSymbolExists)
 list(APPEND CMAKE_REQUIRED_INCLUDES "${GFLAGS_INCLUDE_DIR}/")
@@ -176,7 +202,7 @@ target_link_libraries(wdt_min
   ${FOLLY_LIBRARY}
   ${GLOG_LIBRARY}
   ${GFLAGS_LIBRARY}
-  ${Boost_LIBRARIES}
+  ${FMT_LIBRARY}
   ${DOUBLECONV_LIBRARY}
   ${OPENSSL_CRYPTO_LIBRARY}
   ${CMAKE_THREAD_LIBS_INIT} # Must be last to avoid link errors
@@ -226,7 +252,8 @@ if (NOT WDT_USE_SYSTEM_FOLLY)
   endif()
 
   add_library(folly4wdt ${FOLLY_CPP_SRC})
-  target_link_libraries(folly4wdt ${GLOG_LIBRARY} ${DOUBLECONV_LIBRARY})
+  target_link_libraries(folly4wdt ${GLOG_LIBRARY} ${FMT_LIBRARY}
+    ${DOUBLECONV_LIBRARY})
 endif()
 
 # Order is important - inside fb we want the above
@@ -273,6 +300,19 @@ endforeach()
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/util" DESTINATION include/wdt
         FILES_MATCHING PATTERN "*.h")
 
+# Generated config header, included by the installed headers
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/wdt/WdtConfig.h"
+        DESTINATION include/wdt)
+
+# With the bundled folly, the installed headers also need folly's
+if (NOT WDT_USE_SYSTEM_FOLLY)
+  install(DIRECTORY "${FOLLY_SOURCE_DIR}/folly" DESTINATION include
+          FILES_MATCHING PATTERN "*.h"
+          PATTERN "test" EXCLUDE PATTERN "docs" EXCLUDE)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/folly/folly-config.h"
+          DESTINATION include/folly)
+endif()
+
 # wcp script
 install(PROGRAMS test/wcp.sh DESTINATION bin RENAME wcp)
 
@@ -283,6 +323,12 @@ if (BUILD_TESTING)
 
   enable_testing()
   find_package(GTest CONFIG REQUIRED)
+  # An installed GTest exports namespaced targets, the rest of this file
+  # uses the in tree names:
+  if (TARGET GTest::gtest AND NOT TARGET gtest)
+    add_library(gtest INTERFACE)
+    target_link_libraries(gtest INTERFACE GTest::gtest)
+  endif()
   if(NOT GTest_FOUND)
     include(ExternalProject)
 

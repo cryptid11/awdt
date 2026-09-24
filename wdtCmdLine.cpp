@@ -5,6 +5,7 @@
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
+#include <folly/ScopeGuard.h>
 #include <folly/String.h>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
@@ -242,6 +243,11 @@ int main(int argc, char* argv[]) {
   // Might be a sub class (fbonly wdtCmdLine.cpp)
   facebook::wdt::Wdt& wdt =
       facebook::wdt::WDTCLASS::initializeWdt(FLAGS_app_name);
+  // Orderly shutdown of the transfer machinery while logging still works
+  // (the Wdt registry is never destroyed at exit).
+  SCOPE_EXIT {
+    facebook::wdt::Wdt::releaseWdt(FLAGS_app_name);
+  };
   if (FLAGS_print_options) {
     wdt.printWdtOptions(std::cout);
     return 0;

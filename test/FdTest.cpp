@@ -95,7 +95,7 @@ TEST(DupSend, DuplicateSend) {
   int fd = fileno(tmp);
   WLOG(INFO) << "tmp file fd " << fd;
   fclose(tmp);
-  WdtTransferRequest req(/* start port */ 0, /* num ports */ 3, "/tmp/wdtTest");
+  WdtTransferRequest req(/* start port */ 0, /* num ports */ 3, tmpDir() + "/wdtTest");
   Receiver r(req);
   req = r.init();
   EXPECT_EQ(OK, req.errorCode);

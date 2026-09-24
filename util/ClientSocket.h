@@ -8,6 +8,7 @@
 #pragma once
 
 #include <netdb.h>
+#include <netinet/in.h>
 #include <wdt/ErrorCodes.h>
 #include <wdt/util/IClientSocket.h>
 #include <wdt/util/WdtSocket.h>

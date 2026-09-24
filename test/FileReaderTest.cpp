@@ -18,8 +18,8 @@ using std::string;
 class RandomFile {
  public:
   explicit RandomFile(int64_t size) {
-    char genFileName[] = "/tmp/FILE_TEST_XXXXXX";
-    int ret = mkstemp(genFileName);
+    std::string genFileName = tmpDir() + "/FILE_TEST_XXXXXX";
+    int ret = mkstemp(&genFileName[0]);
     if (ret == -1) {
       WLOG(ERROR) << "Error creating temp file";
       return;
@@ -52,7 +52,7 @@ class RandomFile {
     return fileName_;
   }
   string getShortName() const {
-    return fileName_.substr(5);
+    return fileName_.substr(tmpDir().size() + 1);
   }
   ~RandomFile() {
     std::remove(fileName_.c_str());
@@ -150,7 +150,7 @@ TEST(FileByteSource, FILEINFO_ODIRECT) {
   std::atomic<bool> shouldAbort{false};
   WdtAbortChecker queueAbortChecker(shouldAbort);
   WdtOptions options;
-  DirectorySourceQueue Q(options, "/tmp", &queueAbortChecker);
+  DirectorySourceQueue Q(options, tmpDir(), &queueAbortChecker);
   std::vector<WdtFileInfo> files;
   WdtFileInfo info(file.getShortName(), sizeToRead, true);
   files.push_back(info);
@@ -176,7 +176,7 @@ TEST(FileByteSource, MULTIPLEFILES_ODIRECT) {
   }
   std::atomic<bool> shouldAbort{false};
   WdtAbortChecker queueAbortChecker(shouldAbort);
-  DirectorySourceQueue Q(options, "/tmp", &queueAbortChecker);
+  DirectorySourceQueue Q(options, tmpDir(), &queueAbortChecker);
   std::vector<WdtFileInfo> files;
   for (const auto& f : randFiles) {
     WdtFileInfo info(f.getShortName(), sizeToRead, true);
@@ -212,7 +212,7 @@ TEST(FileByteSource, MULTIPLEFILES_REGULAR) {
   }
   std::atomic<bool> shouldAbort{false};
   WdtAbortChecker queueAbortChecker(shouldAbort);
-  DirectorySourceQueue Q(options, "/tmp", &queueAbortChecker);
+  DirectorySourceQueue Q(options, tmpDir(), &queueAbortChecker);
   std::vector<WdtFileInfo> files;
   for (const auto& f : randFiles) {
     WdtFileInfo info(f.getShortName(), sizeToRead, false);
