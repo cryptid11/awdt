@@ -26,14 +26,20 @@ import java.io.File
  *   usually "localhost": set it to the device's IP address for transfers from
  *   another machine.
  * @param transferId identifies the transfer, generated when null
+ * @param encryptionKey the transfer's secret key (16 bytes), generated when
+ *   null. Lets an app agree on the key with the sender beforehand, so that it
+ *   never has to travel in the connection URL.
  */
 class WdtReceiver @JvmOverloads constructor(
     directory: File,
     options: WdtOptions = WdtOptions(),
     hostName: String? = null,
     transferId: String? = null,
+    encryptionKey: ByteArray? = null,
 ) : WdtTransfer(
-    NativeWdt.receiverCreate(directory.path, options.toNative(), hostName, transferId),
+    NativeWdt.receiverCreate(
+        directory.path, options.toNative(), hostName, transferId, encryptionKey,
+    ),
 ) {
     /** The connection URL, once [start]ed. It contains the encryption secret. */
     @Volatile

@@ -15,11 +15,12 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- wdt:// links: send to that receiver -->
+            <!-- awdt:// share links (download) and wdt:// receiver URLs (send) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="awdt" />
                 <data android:scheme="wdt" />
             </intent-filter>
             <!-- files (or a wdt:// URL) shared from other apps -->

@@ -17,6 +17,7 @@
 #include <wdt/WdtConfig.h>
 #include <wdt/util/EncryptionUtils.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
@@ -414,7 +415,7 @@ JNIEXPORT void JNICALL Java_com_facebook_wdt_NativeWdt_setLogLevel(
 
 JNIEXPORT jlong JNICALL Java_com_facebook_wdt_NativeWdt_receiverCreate(
     JNIEnv* env, jclass, jstring directory, jobjectArray options,
-    jstring hostName, jstring transferId) {
+    jstring hostName, jstring transferId, jbyteArray encryptionKey) {
   auto t = std::make_unique<NativeTransfer>();
   WdtOptions opts;
   opts.copyInto(WdtOptions::get());
@@ -426,6 +427,25 @@ JNIEXPORT jlong JNICALL Java_com_facebook_wdt_NativeWdt_receiverCreate(
   req.hostName = toString(env, hostName);
   req.transferId = toString(env, transferId);
   req.ivChangeInterval = opts.iv_change_interval_mb * kMbToB;
+  if (encryptionKey) {
+    // Caller provided secret, instead of a generated one
+    jsize len = env->GetArrayLength(encryptionKey);
+    EncryptionType type = parseEncryptionType(opts.encryption_type);
+    if (len != kAESBlockSize) {
+      throwIllegalArgument(env, "The encryption key must be " +
+                                    std::to_string(kAESBlockSize) + " bytes");
+      return 0;
+    }
+    if (type == ENC_NONE) {
+      throwIllegalArgument(env, "An encryption key needs encryption enabled");
+      return 0;
+    }
+    std::string key(len, '\0');
+    env->GetByteArrayRegion(encryptionKey, 0, len,
+                            reinterpret_cast<jbyte*>(&key[0]));
+    req.encryptionData = EncryptionParams(type, key);
+    std::fill(key.begin(), key.end(), '\0');
+  }
   auto receiver = std::make_unique<Receiver>(req);
   receiver->setWdtOptions(opts);
   receiver->setAbortChecker(t->abortChecker);

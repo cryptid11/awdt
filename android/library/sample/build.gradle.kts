@@ -53,6 +53,12 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             matchingFallbacks += listOf("release")
         }
+        // After "minified" (initWith copies): only debug builds get the
+        // suffix, so they install next to the minified app. Two copies on
+        // one device can then share files with each other.
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+        }
     }
 
     compileOptions {

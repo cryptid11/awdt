@@ -145,18 +145,27 @@ new builds install over older ones from any machine or CI run.
 ### The sample app
 
 `sample/` is a small app built on the library (the APKs attached to the
-releases):
+releases). Both devices need the app and the same Wi-Fi network:
 
-* **Receive files** shows the device's address and a `wdt://` URL to give to
-  the sender (Copy / Share). Received files are saved in `Download/WDT`.
-* **Send**: paste the receiver's URL (or open a `wdt://` link, or share the
-  URL to the app as text), then **Choose files and send**. Files shared to the
-  app from other apps (gallery, file manager...) can be sent the same way.
-* Between two phones: install it on both, on the same Wi-Fi network. With a
-  computer: run `wdt -directory <folder> -connection_url '<URL>'` there to
-  send to the phone, or start `wdt -directory <folder> -hostname <computer IP>`
-  there and paste the URL it prints in the phone to send to the computer.
-* **Run self-test** sends 20 MB to the device itself.
+* **Send**: *Choose files to share*, then send the `awdt://` link it shows to
+  the other device (*Copy link* / *Share link*). Files shared to the app from
+  other apps (gallery, file manager...) can be shared the same way. The link
+  works, for anyone who has it, until *Stop*.
+* **Receive**: open the link (tap it, or *Paste* it and tap *Download*).
+  Received files are saved in `Download/WDT`.
+* **With a computer** (the `wdt` command line tool): *Receive from a computer*
+  shows a `wdt://` URL to pass to `wdt -directory <folder> -connection_url
+  '<URL>'` there. To send to a computer, run `wdt -directory <folder>
+  -hostname <computer IP>` there and paste the `wdt://` URL it prints under
+  *Receive*.
+* **Run self-test** shares 20 MB and downloads it on the device itself.
+
+WDT's receiver listens and its sender connects to the receiver's URL, so
+share links need a small handshake first (`sample/.../Share.kt`): the sharing
+device listens for it, the downloading device starts a WDT receiver and sends
+back its ports, and the sharing device then WDT-sends to it. The link carries
+the transfer's encryption key (`WdtReceiver`'s `encryptionKey`), which never
+goes over the network.
 
 Its `minified` build type runs R8, which checks the library's ProGuard rules:
 `./gradlew :sample:installMinified`.

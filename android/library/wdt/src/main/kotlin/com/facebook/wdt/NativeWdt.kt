@@ -25,6 +25,7 @@ internal object NativeWdt {
         options: Array<String>,
         hostName: String?,
         transferId: String?,
+        encryptionKey: ByteArray?,
     ): Long
 
     /** Binds the ports and starts accepting; returns the connection URL. */

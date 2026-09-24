@@ -22,7 +22,9 @@ import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.util.Log
 import android.view.View
 import android.view.WindowInsets
@@ -36,6 +38,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.facebook.wdt.ProgressListener
+import com.facebook.wdt.TransferProgress
 import com.facebook.wdt.TransferReport
 import com.facebook.wdt.Wdt
 import com.facebook.wdt.WdtException
@@ -44,8 +47,10 @@ import com.facebook.wdt.WdtReceiver
 import com.facebook.wdt.WdtSender
 import com.facebook.wdt.WdtTransfer
 import java.io.File
+import java.net.ConnectException
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -53,29 +58,33 @@ import java.util.concurrent.Executors
 import kotlin.random.Random
 
 /**
- * Sends and receives files with WDT, between two devices running this app,
- * or with the `wdt` command line tool on a computer.
- *
- * Receive: shows a wdt:// URL for the sender; received files are saved in
- * Download/WDT. Send: paste (or share, or open) a receiver's URL and choose
- * files; files shared from other apps can be sent too.
+ * Sends files with WDT between two devices running this app: the sender
+ * chooses files and shares a link, the other device opens it and downloads
+ * (see Share.kt). Also works with the `wdt` command line tool on a computer,
+ * through wdt:// URLs.
  */
 class MainActivity : Activity() {
     private val executor = Executors.newCachedThreadPool()
 
-    /** The running transfer, for Stop. */
+    /** What Stop stops. */
     @Volatile
-    private var current: WdtTransfer? = null
+    private var stoppable: AutoCloseable? = null
 
-    /** Files shared to this app (ACTION_SEND), sent instead of picking. */
+    /** Files shared to this app (ACTION_SEND), shared instead of picking. */
     private var sharedUris: List<Uri> = emptyList()
 
+    /** What the picked files are for. */
+    private var pickPurpose = PICK_TO_SHARE
+
     private lateinit var addressView: TextView
-    private lateinit var receiveButton: Button
-    private lateinit var receivePanel: LinearLayout
-    private lateinit var receiveUrlView: TextView
-    private lateinit var urlInput: EditText
-    private lateinit var sendButton: Button
+    private lateinit var shareButton: Button
+    private lateinit var sharePanel: LinearLayout
+    private lateinit var shareLinkView: TextView
+    private lateinit var linkInput: EditText
+    private lateinit var downloadButton: Button
+    private lateinit var computerButton: Button
+    private lateinit var computerPanel: LinearLayout
+    private lateinit var computerUrlView: TextView
     private lateinit var selfTestButton: Button
     private lateinit var stopButton: Button
     private lateinit var progressBar: ProgressBar
@@ -99,53 +108,135 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        // close() waits for the transfer to stop: not on the UI thread
-        current?.let { transfer -> executor.execute { transfer.close() } }
+        // may wait for a transfer to stop: not on the UI thread
+        stoppable?.let { executor.execute { it.close() } }
         executor.shutdown()
         super.onDestroy()
     }
 
-    // ------------------------------------------------------------ receive
+    // ------------------------------------------------------ share (send)
 
-    private fun startReceive() {
+    private fun onShareClicked() {
+        if (sharedUris.isNotEmpty()) {
+            startSharing(sharedUris)
+        } else {
+            pickFiles(PICK_TO_SHARE)
+        }
+    }
+
+    /** Serves [uris] behind a share link, until Stop. */
+    private fun startSharing(uris: List<Uri>) {
         val address = preferredAddress()
         if (address == null) {
             log("No network: connect to Wi-Fi (both devices on the same network)")
             return
         }
-        if (address.rank > RANK_HOTSPOT) {
-            log("Not on Wi-Fi (${address.iface}): the sender may not reach ${address.ip}")
-        }
-        // Received into internal storage, then copied to Download/WDT
-        val staging = File(filesDir, "incoming").apply {
-            deleteRecursively()
-            mkdirs()
-        }
-        val options = WdtOptions().apply {
-            progressReportIntervalMillis = 250
-            maxAcceptRetries = 6000 // with 100 ms accept timeouts: wait ~10 min
-        }
-        val receiver = WdtReceiver(staging, options, hostName = address.ip)
-        val url = try {
-            receiver.start(progressListener)
-        } catch (e: WdtException) {
-            receiver.close()
-            log("Could not start receiving: ${e.message}")
-            return
-        }
-        Log.i(TAG, "Receiver URL: $url")
-        receiveUrlView.text = url
-        receivePanel.visibility = View.VISIBLE
-        setBusy(receiver)
-        log("Waiting for the sender (10 min)...")
+        warnIfNotWifi(address)
+        setBusy()
         executor.execute {
-            val report = receiver.awaitFinish()
-            receiver.close()
-            val saved = if (report.isSuccess) saveReceived(staging) else null
-            runOnUiThread {
-                receivePanel.visibility = View.GONE
-                finished("Received", report)
-                saved?.let { log(it) }
+            val sources = try {
+                openSources(uris)
+            } catch (e: Exception) {
+                runOnUiThread {
+                    log("Can't read the files: ${e.message}")
+                    setIdle()
+                }
+                return@execute
+            }
+            try {
+                val server = ShareServer(
+                    address.ip, sources.directory, sources.files, sources.totalBytes,
+                    options = { WdtOptions().apply { progressReportIntervalMillis = 250 } },
+                )
+                stoppable = server
+                val link = server.link.toString()
+                Log.i(TAG, "Share link: $link")
+                runOnUiThread {
+                    shareLinkView.text = link
+                    sharePanel.visibility = View.VISIBLE
+                    log("Sharing ${sources.files.size} file(s), ${mb(sources.totalBytes)}: send the link to the other device")
+                    if (sharedUris.isNotEmpty()) {
+                        sharedUris = emptyList()
+                        updateButtons()
+                    }
+                }
+                server.serve(object : ShareServer.Listener {
+                    override fun onProgress(progress: TransferProgress) = showProgress(progress)
+
+                    override fun onDownloaderConnected(address: String) = runOnUiThread {
+                        log("$address is downloading...")
+                        progressBar.isIndeterminate = true
+                    }
+
+                    override fun onFinished(address: String, report: TransferReport) = runOnUiThread {
+                        logReport("Sent to $address", report)
+                        log("Still sharing: the link works until you tap Stop")
+                    }
+
+                    override fun onError(message: String) = runOnUiThread { log("Share: $message") }
+                })
+            } catch (e: Exception) {
+                runOnUiThread { log("Share failed: ${e.message}") }
+            } finally {
+                sources.close()
+                runOnUiThread {
+                    sharePanel.visibility = View.GONE
+                    log("Stopped sharing")
+                    setIdle()
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------- download (receive)
+
+    private fun onDownloadClicked() {
+        val text = linkInput.text.toString().trim()
+        when {
+            text.startsWith("wdt://") -> pickFiles(PICK_TO_SEND_TO_COMPUTER)
+            ShareLink.isLink(text) -> {
+                val link = ShareLink.parse(text)
+                if (link == null) {
+                    log("This link is incomplete or damaged: copy it again")
+                } else {
+                    startDownload(link)
+                }
+            }
+            text.isEmpty() -> log("First paste the link from the other device")
+            else -> log("That's not a WDT link (they start with awdt://)")
+        }
+    }
+
+    private fun startDownload(link: ShareLink) {
+        setBusy()
+        log("Connecting to ${link.host}...")
+        val download = ShareDownload(link)
+        stoppable = download
+        val staging = freshDir(File(filesDir, "incoming"))
+        executor.execute {
+            try {
+                val options = WdtOptions().apply {
+                    progressReportIntervalMillis = 250
+                    maxAcceptRetries = 300 // the sender connects right away: 30 s
+                }
+                val report = download.run(staging, options, progressListener) { files, bytes ->
+                    runOnUiThread { log("Receiving $files file(s), ${mb(bytes)} from ${link.host}...") }
+                }
+                val saved = if (report.isSuccess) saveReceived(staging) else null
+                runOnUiThread {
+                    logReport("Received", report)
+                    saved?.let { log(it) }
+                }
+            } catch (e: Exception) {
+                val message = when (e) {
+                    is ConnectException, is SocketTimeoutException ->
+                        "Can't reach ${link.host}. Is it still sharing, on the same Wi-Fi?"
+                    else -> e.message ?: e.toString()
+                }
+                runOnUiThread { log("Download failed: $message") }
+            } finally {
+                staging.deleteRecursively()
+                runOnUiThread { setIdle() }
             }
         }
     }
@@ -154,7 +245,9 @@ class MainActivity : Activity() {
     private fun saveReceived(staging: File): String {
         val files = staging.walkTopDown().filter { it.isFile && it.name != ".wdt.log" }.toList()
         if (Build.VERSION.SDK_INT < 29) {
-            return "Files saved in ${staging.path}"
+            val dest = File(getExternalFilesDir(null), "received")
+            staging.copyRecursively(dest, overwrite = true)
+            return "Files saved in ${dest.path}"
         }
         var count = 0
         for (file in files) {
@@ -170,7 +263,7 @@ class MainActivity : Activity() {
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             if (uri == null) {
-                logFromWorker("Could not save ${file.name}")
+                runOnUiThread { log("Could not save ${file.name}") }
                 continue
             }
             contentResolver.openOutputStream(uri)!!.use { out ->
@@ -179,25 +272,133 @@ class MainActivity : Activity() {
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             contentResolver.update(uri, values, null, null)
-            file.delete()
             count++
         }
-        staging.deleteRecursively()
         return "Saved $count file(s) in Download/WDT"
     }
 
-    // --------------------------------------------------------------- send
+    // ---------------------------------------- with the wdt command line tool
 
-    private fun onSendClicked() {
-        val url = urlInput.text.toString().trim()
-        if (!url.startsWith("wdt://")) {
-            log("First paste the receiver's URL (it starts with wdt://)")
+    /** A WDT receiver whose wdt:// URL is given to `wdt` on a computer. */
+    private fun receiveFromComputer() {
+        val address = preferredAddress()
+        if (address == null) {
+            log("No network: connect to Wi-Fi")
             return
         }
-        if (sharedUris.isNotEmpty()) {
-            send(url, sharedUris)
+        val staging = freshDir(File(filesDir, "incoming"))
+        val options = WdtOptions().apply {
+            progressReportIntervalMillis = 250
+            maxAcceptRetries = 6000 // with 100 ms accept timeouts: wait ~10 min
+        }
+        val receiver = WdtReceiver(staging, options, hostName = address.ip)
+        val url = try {
+            receiver.start(progressListener)
+        } catch (e: WdtException) {
+            receiver.close()
+            log("Could not start receiving: ${e.message}")
             return
         }
+        Log.i(TAG, "Receiver URL: $url")
+        computerUrlView.text = url
+        computerPanel.visibility = View.VISIBLE
+        setBusy()
+        stoppable = TransferStopper(receiver)
+        log("Waiting for wdt on the computer (10 min)...")
+        executor.execute {
+            val report = receiver.awaitFinish()
+            receiver.close()
+            val saved = if (report.isSuccess) saveReceived(staging) else null
+            staging.deleteRecursively()
+            runOnUiThread {
+                computerPanel.visibility = View.GONE
+                logReport("Received", report)
+                saved?.let { log(it) }
+                setIdle()
+            }
+        }
+    }
+
+    /** Sends to a `wdt` receiver, given the wdt:// URL it printed. */
+    private fun sendToComputer(url: String, uris: List<Uri>) {
+        setBusy()
+        log("Sending ${uris.size} file(s)...")
+        executor.execute {
+            try {
+                openSources(uris).use { sources ->
+                    val options = WdtOptions().apply { progressReportIntervalMillis = 250 }
+                    WdtSender(url, sources.directory, options, sources.files).use { sender ->
+                        stoppable = TransferStopper(sender)
+                        val report = sender.transfer(progressListener)
+                        runOnUiThread { logReport("Sent", report) }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { log("Send failed: ${e.message}") }
+            } finally {
+                runOnUiThread { setIdle() }
+            }
+        }
+    }
+
+    /** Stop for a plain WDT transfer (closed by its own thread). */
+    private class TransferStopper(val transfer: WdtTransfer) : AutoCloseable {
+        override fun close() = transfer.abort()
+    }
+
+    // ---------------------------------------------------------- self-test
+
+    /** Shares 20 MB through a share link on this device and downloads it. */
+    private fun selfTest() {
+        setBusy()
+        log("Self-test: sharing 20 MB and downloading it on this device...")
+        executor.execute {
+            val src = freshDir(File(cacheDir, "selftest-src"))
+            val dst = freshDir(File(cacheDir, "selftest-dst"))
+            var server: ShareServer? = null
+            try {
+                for (i in 1..20) File(src, "file$i.bin").writeBytes(Random.nextBytes(1 shl 20))
+                val files = src.listFiles()!!.map { WdtSender.SourceFile(it.name) }
+                val options = { WdtOptions().apply { progressReportIntervalMillis = 100 } }
+                server = ShareServer("127.0.0.1", src, files, 20L shl 20, options, bindAddress = "127.0.0.1")
+                val serving = executor.submit {
+                    server.serve(object : ShareServer.Listener {
+                        override fun onProgress(progress: TransferProgress) = showProgress(progress)
+                        override fun onDownloaderConnected(address: String) {}
+                        override fun onFinished(address: String, report: TransferReport) =
+                            runOnUiThread { logReport("Self-test sent", report) }
+                        override fun onError(message: String) = runOnUiThread { log("Self-test: $message") }
+                    })
+                }
+                // through the text form, like a link pasted by a user
+                val link = ShareLink.parse(server.link.toString())!!
+                val download = ShareDownload(link)
+                stoppable = download
+                val report = download.run(dst, options(), ProgressListener {}) { _, _ -> }
+                server.close()
+                serving.get()
+                val identical = src.listFiles()!!.all {
+                    it.readBytes().contentEquals(File(dst, it.name).readBytes())
+                }
+                runOnUiThread {
+                    logReport("Self-test received", report)
+                    log(if (report.isSuccess && identical) "Self-test: OK, files identical" else "Self-test: FAILED")
+                }
+            } catch (e: Exception) {
+                runOnUiThread { log("Self-test failed: $e") }
+            } finally {
+                server?.close()
+                src.deleteRecursively()
+                dst.deleteRecursively()
+                runOnUiThread { setIdle() }
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- files
+
+    private fun pickFiles(purpose: Int) {
+        pickPurpose = purpose
         val pick = Intent(Intent.ACTION_OPEN_DOCUMENT)
             .addCategory(Intent.CATEGORY_OPENABLE)
             .setType("*/*")
@@ -214,53 +415,55 @@ class MainActivity : Activity() {
         val uris = mutableListOf<Uri>()
         data.clipData?.let { clip -> for (i in 0 until clip.itemCount) uris += clip.getItemAt(i).uri }
         if (uris.isEmpty()) data.data?.let { uris += it }
-        if (uris.isNotEmpty()) send(urlInput.text.toString().trim(), uris)
+        if (uris.isEmpty()) return
+        when (pickPurpose) {
+            PICK_TO_SHARE -> startSharing(uris)
+            PICK_TO_SEND_TO_COMPUTER -> sendToComputer(linkInput.text.toString().trim(), uris)
+        }
     }
 
-    private fun send(url: String, uris: List<Uri>) {
-        setBusy(null)
-        log("Sending ${uris.size} file(s)...")
-        executor.execute {
-            val opened = mutableListOf<ParcelFileDescriptor>()
-            // for content that can't be read through a plain file descriptor
-            val staging = File(cacheDir, "outgoing").apply {
-                deleteRecursively()
-                mkdirs()
-            }
-            try {
-                val names = HashSet<String>()
-                val files = uris.map { uri ->
-                    val name = uniqueName(displayName(uri), names)
-                    val pfd = contentResolver.openFileDescriptor(uri, "r")
-                        ?: throw IllegalStateException("Can't open $uri")
-                    if (pfd.statSize >= 0) {
-                        opened += pfd
-                        WdtSender.SourceFile.fromFileDescriptor(name, pfd)
-                    } else {
-                        ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
-                            File(staging, name).outputStream().use { input.copyTo(it) }
-                        }
-                        WdtSender.SourceFile(name)
+    /** Files to send, opened: read through their file descriptors when possible. */
+    private inner class Sources(
+        val directory: File,
+        val files: List<WdtSender.SourceFile>,
+        val totalBytes: Long,
+        private val opened: List<ParcelFileDescriptor>,
+    ) : AutoCloseable {
+        override fun close() {
+            opened.forEach { it.close() }
+            directory.deleteRecursively()
+        }
+    }
+
+    private fun openSources(uris: List<Uri>): Sources {
+        // for content that can't be read through a plain file descriptor
+        val staging = freshDir(File(cacheDir, "outgoing-${System.nanoTime()}"))
+        val opened = mutableListOf<ParcelFileDescriptor>()
+        try {
+            val names = HashSet<String>()
+            var total = 0L
+            val files = uris.map { uri ->
+                val name = uniqueName(displayName(uri), names)
+                val pfd = contentResolver.openFileDescriptor(uri, "r")
+                    ?: throw IllegalStateException("Can't open $uri")
+                if (pfd.statSize >= 0) {
+                    opened += pfd
+                    total += pfd.statSize
+                    WdtSender.SourceFile.fromFileDescriptor(name, pfd)
+                } else {
+                    val copy = File(staging, name)
+                    ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+                        copy.outputStream().use { input.copyTo(it) }
                     }
+                    total += copy.length()
+                    WdtSender.SourceFile(name)
                 }
-                val options = WdtOptions().apply { progressReportIntervalMillis = 250 }
-                val sender = WdtSender(url, staging, options, files)
-                runOnUiThread { current = sender }
-                val report = sender.use { it.transfer(progressListener) }
-                runOnUiThread {
-                    if (report.isSuccess) sharedUris = emptyList()
-                    updateSendButton()
-                    finished("Sent", report)
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    log("Send failed: ${e.message}")
-                    setIdle()
-                }
-            } finally {
-                opened.forEach { it.close() }
-                staging.deleteRecursively()
             }
+            return Sources(staging, files, total, opened)
+        } catch (e: Exception) {
+            opened.forEach { it.close() }
+            staging.deleteRecursively()
+            throw e
         }
     }
 
@@ -285,28 +488,43 @@ class MainActivity : Activity() {
         return candidate
     }
 
-    /** wdt:// links, URLs and files shared to the app. */
+    private fun freshDir(dir: File) = dir.apply {
+        deleteRecursively()
+        mkdirs()
+    }
+
+    // ------------------------------------------------------------- intents
+
+    /** awdt:// and wdt:// links, links shared as text, files shared. */
     private fun handleIntent(intent: Intent?) {
         intent ?: return
         when (intent.action) {
-            Intent.ACTION_VIEW -> intent.dataString?.takeIf { it.startsWith("wdt://") }?.let {
-                urlInput.setText(it)
-                log("Got a receiver URL: choose the files to send")
-            }
+            Intent.ACTION_VIEW -> intent.dataString?.let { acceptLink(it) }
             Intent.ACTION_SEND -> {
-                intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
-                    ?.takeIf { it.startsWith("wdt://") }?.let {
-                        urlInput.setText(it)
-                        log("Got a receiver URL: choose the files to send")
-                    }
+                intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
+                    Regex("""a?wdt://\S+""").find(text)?.let { acceptLink(it.value) }
+                }
                 streamExtra(intent)?.let { sharedUris = listOf(it) }
             }
             Intent.ACTION_SEND_MULTIPLE -> sharedUris = streamListExtra(intent)
         }
         if (sharedUris.isNotEmpty()) {
-            log("${sharedUris.size} shared file(s) ready: paste the receiver's URL and send")
+            log("${sharedUris.size} file(s) received from another app: tap Share to send them")
         }
-        updateSendButton()
+        updateButtons()
+    }
+
+    private fun acceptLink(text: String) {
+        when {
+            ShareLink.isLink(text) -> {
+                linkInput.setText(text)
+                log("Got a link: tap Download")
+            }
+            text.startsWith("wdt://") -> {
+                linkInput.setText(text)
+                log("Got a wdt:// receiver URL: tap Choose files and send")
+            }
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -325,73 +543,31 @@ class MainActivity : Activity() {
             intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
         }.orEmpty()
 
-    private fun updateSendButton() {
-        sendButton.text =
-            if (sharedUris.isEmpty()) "Choose files and send" else "Send ${sharedUris.size} shared file(s)"
-    }
+    // --------------------------------------------------------------- state
 
-    // ---------------------------------------------------------- self-test
+    private val progressListener = ProgressListener { showProgress(it) }
 
-    /** Sends 20 MB to this device itself, and compares. */
-    private fun selfTest() {
-        setBusy(null)
-        log("Self-test: sending 20 MB to this device...")
-        executor.execute {
-            val src = File(cacheDir, "selftest-src").apply { deleteRecursively(); mkdirs() }
-            val dst = File(cacheDir, "selftest-dst").apply { deleteRecursively(); mkdirs() }
-            try {
-                for (i in 1..20) File(src, "file$i.bin").writeBytes(Random.nextBytes(1 shl 20))
-                val options = WdtOptions().apply {
-                    numPorts = 4
-                    progressReportIntervalMillis = 100
-                }
-                WdtReceiver(dst, options).use { receiver ->
-                    val url = receiver.start()
-                    val received = executor.submit<TransferReport> { receiver.awaitFinish() }
-                    val report = WdtSender(url, src, options).use { sender ->
-                        runOnUiThread { current = sender }
-                        sender.transfer(progressListener)
-                    }
-                    received.get()
-                    val identical = src.listFiles()!!.all {
-                        it.readBytes().contentEquals(File(dst, it.name).readBytes())
-                    }
-                    runOnUiThread {
-                        finished("Self-test", report)
-                        log(if (identical) "Self-test: files identical" else "Self-test: FILES DIFFER")
-                    }
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    log("Self-test failed: $e")
-                    setIdle()
-                }
-            } finally {
-                src.deleteRecursively()
-                dst.deleteRecursively()
-            }
+    private fun showProgress(p: TransferProgress) = runOnUiThread {
+        if (p.totalBytes > 0) {
+            progressBar.isIndeterminate = false
+            progressBar.progress = p.percent
+            progressText.text = "%s / %s  ·  %.1f MB/s".format(
+                mb(p.bytesTransferred), mb(p.totalBytes), p.currentThroughputMBps,
+            )
+        } else {
+            progressText.text = "%s  ·  %.1f MB/s".format(mb(p.bytesTransferred), p.currentThroughputMBps)
         }
     }
 
-    // ------------------------------------------------------------- state
-
-    private val progressListener = ProgressListener { p ->
-        runOnUiThread {
-            if (p.totalBytes > 0) {
-                progressBar.isIndeterminate = false
-                progressBar.progress = p.percent
-                progressText.text = "%s / %s  ·  %.1f MB/s".format(
-                    mb(p.bytesTransferred), mb(p.totalBytes), p.currentThroughputMBps,
-                )
-            } else {
-                progressText.text = "%s  ·  %.1f MB/s".format(mb(p.bytesTransferred), p.currentThroughputMBps)
-            }
-        }
+    private fun updateButtons() {
+        shareButton.text =
+            if (sharedUris.isEmpty()) "Choose files to share" else "Share ${sharedUris.size} file(s)"
+        downloadButton.text =
+            if (linkInput.text.trim().startsWith("wdt://")) "Choose files and send" else "Download"
     }
 
-    private fun setBusy(transfer: WdtTransfer?) {
-        current = transfer
-        for (b in listOf(receiveButton, sendButton, selfTestButton)) b.isEnabled = false
+    private fun setBusy() {
+        for (b in listOf(shareButton, downloadButton, computerButton, selfTestButton)) b.isEnabled = false
         stopButton.visibility = View.VISIBLE
         progressBar.visibility = View.VISIBLE
         progressBar.isIndeterminate = true
@@ -400,17 +576,16 @@ class MainActivity : Activity() {
     }
 
     private fun setIdle() {
-        current = null
-        for (b in listOf(receiveButton, sendButton, selfTestButton)) b.isEnabled = true
+        stoppable = null
+        for (b in listOf(shareButton, downloadButton, computerButton, selfTestButton)) b.isEnabled = true
         stopButton.visibility = View.GONE
         progressBar.visibility = View.GONE
+        progressText.text = ""
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
-    private fun finished(what: String, report: TransferReport) {
-        setIdle()
+    private fun logReport(what: String, report: TransferReport) {
         if (report.isSuccess) {
-            progressText.text = ""
             // only the sender counts files
             val files = if (report.numFiles > 0) "${report.numFiles} file(s), " else ""
             log(
@@ -431,9 +606,7 @@ class MainActivity : Activity() {
         logView.append("$time  $message\n")
     }
 
-    private fun logFromWorker(message: String) = runOnUiThread { log(message) }
-
-    // ------------------------------------------------------------ network
+    // ------------------------------------------------------------- network
 
     private data class LocalAddress(val iface: String, val ip: String, val rank: Int)
 
@@ -460,6 +633,12 @@ class MainActivity : Activity() {
 
     private fun preferredAddress() = localAddresses().firstOrNull()
 
+    private fun warnIfNotWifi(address: LocalAddress) {
+        if (address.rank > RANK_HOTSPOT) {
+            log("Not on Wi-Fi (${address.iface}): the other device may not reach ${address.ip}")
+        }
+    }
+
     private fun showAddress() {
         val all = localAddresses()
         addressView.text = if (all.isEmpty()) {
@@ -469,7 +648,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // ----------------------------------------------------------------- UI
+    // ------------------------------------------------------------------ UI
 
     private fun buildUi(): View {
         val column = LinearLayout(this).apply {
@@ -477,51 +656,58 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(16), dp(20), dp(24))
         }
         column.addView(text("WDT", 30f, bold = true))
-        column.addView(text("Warp speed Data Transfer", 14f, secondary = true))
+        column.addView(text("Warp speed Data Transfer, on the same Wi-Fi", 14f, secondary = true))
         addressView = text("", 14f, secondary = true).also { column.addView(it, margins(top = 4)) }
 
-        column.addView(heading("Receive"))
-        column.addView(text("Files are saved in Download/WDT.", 14f, secondary = true))
-        receiveButton = button("Receive files") { startReceive() }.also { column.addView(it, margins(top = 8)) }
-        receivePanel = LinearLayout(this).apply {
+        column.addView(heading("Send"))
+        column.addView(text("Choose files, then send the link to the other device.", 14f, secondary = true))
+        shareButton = button("Choose files to share") { onShareClicked() }
+            .also { column.addView(it, margins(top = 8)) }
+        sharePanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
-        receivePanel.addView(text("Give this URL to the sender:", 14f), margins(top = 12))
-        receiveUrlView = text("", 13f, mono = true).apply { setTextIsSelectable(true) }
-        receivePanel.addView(receiveUrlView, margins(top = 4))
-        receivePanel.addView(
+        sharePanel.addView(text("Link to send to the other device:", 14f), margins(top = 12))
+        shareLinkView = text("", 13f, mono = true).apply { setTextIsSelectable(true) }
+        sharePanel.addView(shareLinkView, margins(top = 4))
+        sharePanel.addView(
             row(
-                button("Copy URL") { copy(receiveUrlView.text.toString()) },
-                button("Share URL") { share(receiveUrlView.text.toString()) },
+                button("Copy link") { copy(shareLinkView.text.toString()) },
+                button("Share link") { shareText(shareLinkView.text.toString()) },
             ),
         )
-        receivePanel.addView(
+        sharePanel.addView(
             text(
-                "Other phone: this app → paste the URL under Send.\n" +
-                    "Computer: wdt -directory <folder> -connection_url '<URL>'",
+                "The other device opens it in this app. Anyone with the link on this " +
+                    "network can download these files, until you tap Stop.",
                 13f, secondary = true,
             ),
             margins(top = 4),
         )
-        column.addView(receivePanel)
+        column.addView(sharePanel)
 
-        column.addView(heading("Send"))
-        urlInput = EditText(this).apply {
+        column.addView(heading("Receive"))
+        column.addView(text("Files are saved in Download/WDT.", 14f, secondary = true))
+        linkInput = EditText(this).apply {
             id = R.id.url_input // keeps the text across recreation
-            hint = "Receiver URL (wdt://...)"
+            hint = "Link from the other device (awdt://...)"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI or
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE
             maxLines = 4
             textSize = 13f
             typeface = Typeface.MONOSPACE
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) = updateButtons()
+            })
         }
-        column.addView(urlInput, margins(top = 4))
-        sendButton = button("Choose files and send") { onSendClicked() }
-        column.addView(row(button("Paste") { paste() }, sendButton))
+        column.addView(linkInput, margins(top = 4))
+        downloadButton = button("Download") { onDownloadClicked() }
+        column.addView(row(button("Paste") { paste() }, downloadButton))
 
         stopButton = button("Stop") {
-            current?.abort()
+            stoppable?.let { s -> executor.execute { s.close() } }
             log("Stopping...")
         }.apply { visibility = View.GONE }
         column.addView(stopButton, margins(top = 16))
@@ -535,6 +721,34 @@ class MainActivity : Activity() {
         column.addView(heading("Log"))
         logView = text("", 12f, mono = true).apply { setTextIsSelectable(true) }
         column.addView(logView)
+
+        column.addView(heading("With a computer"))
+        column.addView(
+            text(
+                "Using the wdt command line tool.\n" +
+                    "Computer to phone: tap Receive from a computer, then run there\n" +
+                    "  wdt -directory <folder> -connection_url '<URL>'\n" +
+                    "Phone to computer: run there\n" +
+                    "  wdt -directory <folder> -hostname <its IP>\n" +
+                    "paste the wdt:// URL it prints under Receive, and choose the files.",
+                13f, secondary = true,
+            ),
+        )
+        computerButton = button("Receive from a computer") { receiveFromComputer() }
+        column.addView(computerButton, margins(top = 8))
+        computerPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        computerUrlView = text("", 13f, mono = true).apply { setTextIsSelectable(true) }
+        computerPanel.addView(computerUrlView, margins(top = 8))
+        computerPanel.addView(
+            row(
+                button("Copy URL") { copy(computerUrlView.text.toString()) },
+                button("Share URL") { shareText(computerUrlView.text.toString()) },
+            ),
+        )
+        column.addView(computerPanel)
 
         selfTestButton = button("Run self-test") { selfTest() }
         column.addView(selfTestButton, margins(top = 16))
@@ -575,14 +789,14 @@ class MainActivity : Activity() {
 
     private fun copy(value: String) {
         val clipboard = getSystemService(ClipboardManager::class.java)
-        clipboard.setPrimaryClip(ClipData.newPlainText("WDT URL", value))
+        clipboard.setPrimaryClip(ClipData.newPlainText("WDT link", value))
         // Android 13+ shows its own confirmation
-        if (Build.VERSION.SDK_INT < 33) Toast.makeText(this, "URL copied", Toast.LENGTH_SHORT).show()
+        if (Build.VERSION.SDK_INT < 33) Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
     }
 
-    private fun share(value: String) {
+    private fun shareText(value: String) {
         val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, value)
-        startActivity(Intent.createChooser(send, "Share the WDT URL"))
+        startActivity(Intent.createChooser(send, "Send the link"))
     }
 
     private fun paste() {
@@ -591,7 +805,7 @@ class MainActivity : Activity() {
         if (value.isNullOrEmpty()) {
             log("The clipboard is empty")
         } else {
-            urlInput.setText(value)
+            linkInput.setText(Regex("""a?wdt://\S+""").find(value)?.value ?: value)
         }
     }
 
@@ -634,6 +848,8 @@ class MainActivity : Activity() {
     private companion object {
         const val TAG = "WdtSample"
         const val PICK_FILES = 1
+        const val PICK_TO_SHARE = 0
+        const val PICK_TO_SEND_TO_COMPUTER = 1
         const val RANK_HOTSPOT = 2
     }
 }

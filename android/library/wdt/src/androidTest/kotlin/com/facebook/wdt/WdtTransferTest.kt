@@ -192,6 +192,44 @@ class WdtTransferTest {
     }
 
     @Test
+    fun usesTheProvidedEncryptionKey() {
+        makeTree()
+        val key = ByteArray(16) { (it * 7 + 1).toByte() }
+        val hex = key.joinToString("") { "%02x".format(it) }
+        WdtReceiver(dst, options(), encryptionKey = key).use { receiver ->
+            val url = receiver.start()
+            assertTrue(url, url.contains("Enc=2:$hex"))
+            // a sender given the key by other means than the url
+            val withoutKey = url.replace(Regex("Enc=[^&]*&?"), "")
+            val received = executor.submit<TransferReport> { receiver.awaitFinish() }
+            val sent = WdtSender("$withoutKey&Enc=2:$hex", src, options()).use { it.transfer() }
+            assertTrue(sent.toString(), sent.isSuccess)
+            assertTrue(received.get(60, TimeUnit.SECONDS).isSuccess)
+        }
+        assertEquals(digests(src), digests(dst))
+    }
+
+    @Test
+    fun wrongEncryptionKeyFails() {
+        makeTree()
+        val options = options().apply { maxRetries = 2 }
+        WdtReceiver(dst, options, encryptionKey = ByteArray(16) { 1 }).use { receiver ->
+            val url = receiver.start()
+            val received = executor.submit<TransferReport> { receiver.awaitFinish() }
+            val wrong = url.replace(Regex("Enc=2:[0-9a-f]*"), "Enc=2:" + "02".repeat(16))
+            val sent = WdtSender(wrong, src, options).use { it.transfer() }
+            assertFalse(sent.isSuccess)
+            receiver.abort()
+            assertFalse(received.get(60, TimeUnit.SECONDS).isSuccess)
+        }
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun encryptionKeyMustBe16Bytes() {
+        WdtReceiver(dst, options(), encryptionKey = ByteArray(8))
+    }
+
+    @Test
     fun abortsReceiverWaitingForSender() {
         WdtReceiver(dst, options()).use { receiver ->
             receiver.start()
