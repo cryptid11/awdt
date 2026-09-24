@@ -16,7 +16,6 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
-import java.net.Inet6Address
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -43,11 +42,11 @@ import java.security.SecureRandom
  * transfer and never goes over the network; the proof is a hash of it.
  */
 
-private const val PROTOCOL = "AWDT/1"
+internal const val PROTOCOL = "AWDT/1"
 private const val LINK_SCHEME = "awdt://"
 
 /** Placeholder host in the downloader's URL, replaced by the sharer. */
-private const val RECEIVER_HOST = "receiver"
+internal const val RECEIVER_HOST = "receiver"
 
 class ShareLink(val host: String, val port: Int, val key: ByteArray) {
     override fun toString(): String {
@@ -77,9 +76,24 @@ private fun proof(key: ByteArray): String =
 
 internal fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
+/**
+ * A receiver's URL (with the [RECEIVER_HOST] placeholder and without its
+ * key), pointed at [host] and with [key]: what the sender uses.
+ */
+internal fun senderUrl(receiverUrl: String, host: String, key: ByteArray): String {
+    // wdt://receiver?ports=a,b,... or, for consecutive ports,
+    // wdt://receiver:<first port>?num_ports=n...
+    val m = Regex("""^wdt://$RECEIVER_HOST(:\d{1,5})?\?(.*)$""").matchEntire(receiverUrl)
+        ?: throw ShareException("Unexpected receiver URL")
+    val params = m.groupValues[2].split('&')
+        .filter { it.isNotEmpty() && !it.startsWith("Enc=", ignoreCase = true) }
+    val h = if (host.contains(':')) "[$host]" else host
+    return "wdt://$h${m.groupValues[1]}?" + (params + "Enc=2:${key.toHex()}").joinToString("&")
+}
+
 private fun String.hexToBytes() = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
-private class LineConnection(val socket: Socket) : AutoCloseable {
+internal class LineConnection(val socket: Socket) : AutoCloseable {
     private val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
     private val writer = OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8)
 
@@ -159,8 +173,7 @@ class ShareServer(
                     val receiverUrl = conn.receive("RECEIVER").singleOrNull()
                         ?: throw ShareException("$address: bad receiver URL")
                     listener.onDownloaderConnected(address)
-                    val host = if (peer is Inet6Address) "[$address]" else address
-                    val url = senderUrl(receiverUrl, host, key)
+                    val url = senderUrl(receiverUrl, address, key)
                     WdtSender(url, directory, options(), files).use { s ->
                         sender = s
                         if (closed) s.abort()
@@ -181,16 +194,6 @@ class ShareServer(
         sender?.abort()
     }
 
-    private companion object {
-        /** The downloader's URL, pointed at its address and with the key. */
-        fun senderUrl(receiverUrl: String, host: String, key: ByteArray): String {
-            val prefix = "wdt://$RECEIVER_HOST?"
-            if (!receiverUrl.startsWith(prefix)) throw ShareException("Unexpected receiver URL")
-            val params = receiverUrl.removePrefix(prefix).split('&')
-                .filter { it.isNotEmpty() && !it.startsWith("Enc=", ignoreCase = true) }
-            return "wdt://$host?" + (params + "Enc=2:${key.toHex()}").joinToString("&")
-        }
-    }
 }
 
 /** The downloading side of a share link. */

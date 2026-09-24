@@ -88,6 +88,7 @@ if (NOT WDT_USE_SYSTEM_FOLLY)
   "${FOLLY_SOURCE_DIR}/folly/lang/SafeAssert.cpp"
   "${FOLLY_SOURCE_DIR}/folly/external/fast-crc32/sse_crc32c_v8s3x3.cpp"
   "${FOLLY_SOURCE_DIR}/folly/external/fast-crc32/avx512_crc32c_v8s3x4.cpp"
+  "${FOLLY_SOURCE_DIR}/folly/detail/TrapOnAvx512.cpp"
   )
   # Folly moves/removes files over time: only keep the ones present in the
   # checked out version.
@@ -281,6 +282,16 @@ add_executable(wdtbin wdtCmdLine.cpp ${WDT_FLAGS_RELATED_SRC})
 set_target_properties(wdtbin PROPERTIES COMPILE_DEFINITIONS "STANDALONE_APP")
 
 target_link_libraries(wdtbin wdt_min)
+
+# awdt: desktop companion of the Android app (desktop/awdt.cpp)
+if (NOT ANDROID)
+  option(WDT_BUILD_AWDT "Build awdt, to receive files from the Android app" ON)
+  if (WDT_BUILD_AWDT)
+    add_executable(awdt desktop/awdt.cpp)
+    target_link_libraries(awdt wdt_min)
+    install(TARGETS awdt RUNTIME DESTINATION bin)
+  endif()
+endif()
 
 ### Install rules
 set_target_properties(wdtbin PROPERTIES RUNTIME_OUTPUT_NAME "wdt")

@@ -67,6 +67,67 @@ jobs:
           name: wdt-android
           path: dist/*
 
+  desktop:
+    # The oldest supported runner: the binaries then run on older glibcs too
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build > /dev/null
+          cmake --version | head -1
+
+      - name: Cache native dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            _desktop/src
+            _desktop/host/prefix
+            _desktop/host/build/*.done
+          key: wdt-desktop-deps-${{ runner.os }}-${{ hashFiles('android/build-deps.sh') }}
+
+      - name: Build awdt and wdt
+        env:
+          WDT_DESKTOP_TESTS: 1
+        run: desktop/build.sh
+
+      - name: Unit tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/wdt-tests"
+          cd _desktop/host/build/wdt/_bin/wdt
+          for t in protocol_test test_encdeci64_func test_stats wdt_url_test \
+                   wdt_misc_tests encryption_test file_reader_test; do
+            TMPDIR="$RUNNER_TEMP/wdt-tests" ./$t
+          done
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp _desktop/install/bin/awdt dist/awdt-linux-x86_64
+          cp _desktop/install/bin/wdt dist/wdt-linux-x86_64
+          ./dist/awdt-linux-x86_64 --version
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wdt-desktop
+          path: dist/*
+
+  publish:
+    needs: [build, desktop]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       # main: refresh the rolling "latest" pre-release, handy for downloading
       # the APK straight from a phone
       - name: Move the latest tag
@@ -86,6 +147,8 @@ jobs:
           body: |
             Built from ${{ github.sha }} by the Android workflow.
             `wdt-sample-arm64-v8a.apk` is the sample app for most phones.
+            `awdt-linux-x86_64` receives files from it on a Linux computer:
+            `awdt receive ~/Downloads --auto-accept` (see desktop/README.md).
           files: dist/*
 
       - name: Publish release

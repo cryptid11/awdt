@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Cross-compiles WDT's third-party dependencies (static libs) for Android.
+# Builds WDT's third-party dependencies (static libs) for Android, or for the
+# host (desktop Linux / macOS, used by desktop/build.sh).
 #
 # Usage: android/build-deps.sh [abi] [api]
-#   abi: arm64-v8a (default) | armeabi-v7a | x86_64 | x86
+#   abi: arm64-v8a (default) | armeabi-v7a | x86_64 | x86 | host
 #   api: minimum Android API level (default 24)
 #
-# Env: ANDROID_NDK_HOME  - NDK root (required)
+# Env: ANDROID_NDK_HOME  - NDK root (required, except for host)
 #      WDT_ANDROID_TESTS - if set, also builds googletest (for WDT's tests)
 #      WDT_DEPS_SRC      - where dependency sources are cloned (default ./_android/src)
 #      WDT_ANDROID_OUT   - output root (default ./_android)
@@ -19,8 +20,10 @@ SRC=${WDT_DEPS_SRC:-$OUT/src}
 PREFIX=$OUT/$ABI/prefix
 BUILD=$OUT/$ABI/build
 JOBS=${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}
-: "${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to your NDK root}"
-TOOLCHAIN=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake
+if [ "$ABI" != host ]; then
+  : "${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to your NDK root}"
+  TOOLCHAIN=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake
+fi
 
 mkdir -p "$SRC" "$PREFIX" "$BUILD"
 
@@ -46,10 +49,6 @@ fi
 
 CMAKE_COMMON=(
   -G Ninja
-  -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN"
-  -DANDROID_ABI="$ABI"
-  -DANDROID_PLATFORM="android-$API"
-  -DANDROID_STL=c++_static
   -DCMAKE_BUILD_TYPE=Release
   -DCMAKE_INSTALL_PREFIX="$PREFIX"
   -DCMAKE_PREFIX_PATH="$PREFIX"
@@ -59,6 +58,14 @@ CMAKE_COMMON=(
   -DBUILD_TESTING=OFF
   -Wno-dev -Wno-deprecated
 )
+if [ "$ABI" != host ]; then
+  CMAKE_COMMON+=(
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN"
+    -DANDROID_ABI="$ABI"
+    -DANDROID_PLATFORM="android-$API"
+    -DANDROID_STL=c++_static
+  )
+fi
 
 cmake_dep() { # name [extra cmake args...]
   local name=$1; shift
@@ -87,6 +94,7 @@ cmake_dep glog -DGFLAGS_NOTHREADS=OFF -DWITH_GFLAGS=ON -DWITH_GTEST=OFF -DWITH_U
 if [ ! -f "$BUILD/openssl.done" ]; then
   echo "==> openssl ($ABI)"
   case $ABI in
+    host) OSSL_TARGET= ;; # Configure detects the host
     arm64-v8a) OSSL_TARGET=android-arm64 TRIPLE=aarch64-linux-android ;;
     armeabi-v7a) OSSL_TARGET=android-arm TRIPLE=armv7a-linux-androideabi ;;
     x86_64) OSSL_TARGET=android-x86_64 TRIPLE=x86_64-linux-android ;;
@@ -96,13 +104,17 @@ if [ ! -f "$BUILD/openssl.done" ]; then
   rm -rf "$BUILD/openssl" && mkdir -p "$BUILD/openssl"
   (
     cd "$BUILD/openssl"
-    export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
-    NDK_BIN=$(echo "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin)
-    export PATH=$NDK_BIN:$PATH
-    # The API-suffixed clang driver sets the min SDK level
-    CC=$TRIPLE$API-clang "$SRC/openssl/Configure" "$OSSL_TARGET" \
-      --prefix="$PREFIX" --libdir=lib no-shared no-tests \
-      no-engine no-dso no-ui-console >"$BUILD/openssl.log"
+    OSSL_ARGS=(--prefix="$PREFIX" --libdir=lib no-shared no-tests no-engine no-dso no-ui-console)
+    if [ "$ABI" = host ]; then
+      "$SRC/openssl/Configure" "${OSSL_ARGS[@]}" >"$BUILD/openssl.log"
+    else
+      export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
+      NDK_BIN=$(echo "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin)
+      export PATH=$NDK_BIN:$PATH
+      # The API-suffixed clang driver sets the min SDK level
+      CC=$TRIPLE$API-clang "$SRC/openssl/Configure" "$OSSL_TARGET" \
+        "${OSSL_ARGS[@]}" >"$BUILD/openssl.log"
+    fi
     make -j "$JOBS" build_libs >>"$BUILD/openssl.log"
     make install_dev >>"$BUILD/openssl.log"
   )

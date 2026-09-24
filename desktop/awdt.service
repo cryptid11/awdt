@@ -1,0 +1,16 @@
+# systemd user service: always ready to receive files from the WDT app.
+#   mkdir -p ~/.config/systemd/user
+#   cp desktop/awdt.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now awdt
+#   journalctl --user -u awdt -f      # what was received
+[Unit]
+Description=awdt: receive files from the WDT Android app
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/awdt receive %h/Downloads/WDT --auto-accept
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

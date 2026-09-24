@@ -22,6 +22,7 @@ import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -76,10 +77,18 @@ class MainActivity : Activity() {
     /** What the picked files are for. */
     private var pickPurpose = PICK_TO_SHARE
 
+    /** Where to push the picked files (PICK_TO_PUSH). */
+    private var pushTarget: NearbyReceiver? = null
+
     private lateinit var addressView: TextView
     private lateinit var shareButton: Button
     private lateinit var sharePanel: LinearLayout
     private lateinit var shareLinkView: TextView
+    private lateinit var nearbyList: LinearLayout
+    private lateinit var nearbyStatus: TextView
+    private lateinit var searchButton: Button
+    private lateinit var addressInput: EditText
+    private lateinit var addressButton: Button
     private lateinit var linkInput: EditText
     private lateinit var downloadButton: Button
     private lateinit var computerButton: Button
@@ -99,6 +108,7 @@ class MainActivity : Activity() {
         log("WDT ${Wdt.version}, protocol ${Wdt.protocolVersion}")
         showAddress()
         handleIntent(intent)
+        searchNearby()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -187,6 +197,99 @@ class MainActivity : Activity() {
             }
         }
     }
+
+    // ------------------------------------------ push (to a nearby computer)
+
+    private fun searchNearby() {
+        nearbyStatus.text = "Searching..."
+        searchButton.isEnabled = false
+        executor.execute {
+            val found = try {
+                Nearby.discover()
+            } catch (e: Exception) {
+                emptyList()
+            }
+            runOnUiThread {
+                searchButton.isEnabled = stoppable == null
+                nearbyList.removeAllViews()
+                for (target in found) {
+                    val label = "Send to ${target.name} (${target.host})" +
+                        if (target.autoAccept) "" else ", it asks first"
+                    nearbyList.addView(button(label) { onPushClicked(target) }.apply {
+                        isEnabled = stoppable == null
+                    })
+                }
+                nearbyStatus.text = if (found.isEmpty()) {
+                    "No computer found. On the computer, run:\n  awdt receive ~/Downloads --auto-accept"
+                } else {
+                    ""
+                }
+                nearbyStatus.visibility = if (found.isEmpty()) View.VISIBLE else View.GONE
+            }
+        }
+    }
+
+    private fun onAddressClicked() {
+        val text = addressInput.text.toString().trim()
+        val m = Regex("""^([^:\s]+)(?::(\d{1,5}))?$""").matchEntire(text)
+        if (m == null) {
+            log("Type the computer's address, like 192.168.1.103")
+            return
+        }
+        val port = m.groupValues[2].toIntOrNull() ?: NEARBY_PORT
+        onPushClicked(NearbyReceiver(m.groupValues[1], port, false, m.groupValues[1]))
+    }
+
+    private fun onPushClicked(target: NearbyReceiver) {
+        if (sharedUris.isNotEmpty()) {
+            push(target, sharedUris)
+        } else {
+            pushTarget = target
+            pickFiles(PICK_TO_PUSH)
+        }
+    }
+
+    private fun push(target: NearbyReceiver, uris: List<Uri>) {
+        setBusy()
+        log("Connecting to $target...")
+        val push = Push(target)
+        stoppable = push
+        executor.execute {
+            try {
+                openSources(uris).use { sources ->
+                    val options = WdtOptions().apply { progressReportIntervalMillis = 250 }
+                    val report = push.run(
+                        sources.directory, sources.files, sources.totalBytes, deviceName(),
+                        options, progressListener,
+                    ) {
+                        runOnUiThread {
+                            log("Sending ${sources.files.size} file(s), ${mb(sources.totalBytes)} to ${target.name}...")
+                        }
+                    }
+                    runOnUiThread {
+                        logReport("Sent to ${target.name}", report)
+                        if (report.isSuccess && sharedUris.isNotEmpty()) {
+                            sharedUris = emptyList()
+                            updateButtons()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                val message = when (e) {
+                    is ConnectException, is SocketTimeoutException ->
+                        "Can't reach ${target.host}. Is awdt running there, on the same network?"
+                    else -> e.message ?: e.toString()
+                }
+                runOnUiThread { log("Send failed: $message") }
+            } finally {
+                runOnUiThread { setIdle() }
+            }
+        }
+    }
+
+    private fun deviceName(): String =
+        Settings.Global.getString(contentResolver, "device_name")?.takeIf { it.isNotBlank() }
+            ?: "${Build.MANUFACTURER} ${Build.MODEL}"
 
     // --------------------------------------------------- download (receive)
 
@@ -418,6 +521,7 @@ class MainActivity : Activity() {
         if (uris.isEmpty()) return
         when (pickPurpose) {
             PICK_TO_SHARE -> startSharing(uris)
+            PICK_TO_PUSH -> pushTarget?.let { push(it, uris) }
             PICK_TO_SEND_TO_COMPUTER -> sendToComputer(linkInput.text.toString().trim(), uris)
         }
     }
@@ -509,7 +613,7 @@ class MainActivity : Activity() {
             Intent.ACTION_SEND_MULTIPLE -> sharedUris = streamListExtra(intent)
         }
         if (sharedUris.isNotEmpty()) {
-            log("${sharedUris.size} file(s) received from another app: tap Share to send them")
+            log("${sharedUris.size} file(s) received from another app: tap Share, or a nearby computer")
         }
         updateButtons()
     }
@@ -566,8 +670,12 @@ class MainActivity : Activity() {
             if (linkInput.text.trim().startsWith("wdt://")) "Choose files and send" else "Download"
     }
 
+    private fun actionButtons(): List<View> =
+        listOf(shareButton, downloadButton, computerButton, selfTestButton, searchButton, addressButton) +
+            (0 until nearbyList.childCount).map { nearbyList.getChildAt(it) }
+
     private fun setBusy() {
-        for (b in listOf(shareButton, downloadButton, computerButton, selfTestButton)) b.isEnabled = false
+        for (b in actionButtons()) b.isEnabled = false
         stopButton.visibility = View.VISIBLE
         progressBar.visibility = View.VISIBLE
         progressBar.isIndeterminate = true
@@ -577,7 +685,7 @@ class MainActivity : Activity() {
 
     private fun setIdle() {
         stoppable = null
-        for (b in listOf(shareButton, downloadButton, computerButton, selfTestButton)) b.isEnabled = true
+        for (b in actionButtons()) b.isEnabled = true
         stopButton.visibility = View.GONE
         progressBar.visibility = View.GONE
         progressText.text = ""
@@ -660,9 +768,32 @@ class MainActivity : Activity() {
         addressView = text("", 14f, secondary = true).also { column.addView(it, margins(top = 4)) }
 
         column.addView(heading("Send"))
-        column.addView(text("Choose files, then send the link to the other device.", 14f, secondary = true))
+        column.addView(text("To a computer on this network (running awdt):", 14f, secondary = true))
+        nearbyList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(nearbyList, margins(top = 4))
+        nearbyStatus = text("", 13f, secondary = true).also { column.addView(it, margins(top = 4)) }
+        searchButton = button("Search again") { searchNearby() }
+        addressInput = EditText(this).apply {
+            hint = "or its address"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            isSingleLine = true
+            textSize = 14f
+        }
+        addressButton = button("Send") { onAddressClicked() }
+        column.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(searchButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(addressInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f))
+                addView(addressButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.6f))
+            },
+        )
+        column.addView(
+            text("Or to another phone, with a link it opens in this app:", 14f, secondary = true),
+            margins(top = 12),
+        )
         shareButton = button("Choose files to share") { onShareClicked() }
-            .also { column.addView(it, margins(top = 8)) }
+            .also { column.addView(it, margins(top = 4)) }
         sharePanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -722,10 +853,10 @@ class MainActivity : Activity() {
         logView = text("", 12f, mono = true).apply { setTextIsSelectable(true) }
         column.addView(logView)
 
-        column.addView(heading("With a computer"))
+        column.addView(heading("With the wdt command line tool"))
         column.addView(
             text(
-                "Using the wdt command line tool.\n" +
+                "For computers without awdt, using WDT's own command line tool.\n" +
                     "Computer to phone: tap Receive from a computer, then run there\n" +
                     "  wdt -directory <folder> -connection_url '<URL>'\n" +
                     "Phone to computer: run there\n" +
@@ -850,6 +981,7 @@ class MainActivity : Activity() {
         const val PICK_FILES = 1
         const val PICK_TO_SHARE = 0
         const val PICK_TO_SEND_TO_COMPUTER = 1
+        const val PICK_TO_PUSH = 2
         const val RANK_HOTSPOT = 2
     }
 }

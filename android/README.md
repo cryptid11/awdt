@@ -145,9 +145,12 @@ new builds install over older ones from any machine or CI run.
 ### The sample app
 
 `sample/` is a small app built on the library (the APKs attached to the
-releases). Both devices need the app and the same Wi-Fi network:
+releases). The devices need to be on the same network:
 
-* **Send**: *Choose files to share*, then send the `awdt://` link it shows to
+* **Send to a computer**: computers running `awdt receive <folder>` (see
+  [desktop/README.md](../desktop/README.md)) are listed under **Send**; tap
+  one and choose the files. If none is found, type the computer's address.
+* **Send to a phone**: *Choose files to share*, then send the `awdt://` link it shows to
   the other device (*Copy link* / *Share link*). Files shared to the app from
   other apps (gallery, file manager...) can be shared the same way. The link
   works, for anyone who has it, until *Stop*.
