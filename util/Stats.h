@@ -51,6 +51,7 @@
 
 #include <folly/ThreadLocal.h>
 #include <sys/types.h>
+#include <unistd.h>  // usleep
 
 #include <cmath>
 #include <condition_variable>

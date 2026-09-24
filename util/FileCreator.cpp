@@ -334,6 +334,28 @@ bool FileCreator::createDirRecursively(const std::string dir, bool force) {
   return true;
 }
 
+bool FileCreator::isSafeRelativePath(const std::string& relPath) {
+  if (relPath.empty() || relPath[0] == '/' ||
+      relPath.find('\0') != std::string::npos) {
+    return false;
+  }
+  size_t start = 0;
+  while (true) {
+    size_t end = relPath.find('/', start);
+    if (end == std::string::npos) {
+      end = relPath.size();
+    }
+    const std::string component = relPath.substr(start, end - start);
+    if (component.empty() || component == "." || component == "..") {
+      return false;
+    }
+    if (end == relPath.size()) {
+      return true;
+    }
+    start = end + 1;
+  }
+}
+
 std::string FileCreator::getFullPath(const std::string& relPath) {
   return (rootDir_ + relPath);
 }

@@ -8,6 +8,7 @@
 
 #include <wdt/Wdt.h>
 #include <wdt/test/TestCommon.h>
+#include <wdt/util/FileCreator.h>
 
 #include <thread>
 
@@ -15,6 +16,17 @@ using namespace std;
 
 namespace facebook {
 namespace wdt {
+
+TEST(BasicTest, SafeRelativePaths) {
+  for (const char* ok : {"a", "a/b", "dir/file.txt", "..a", "a..", "a/.b/c"}) {
+    EXPECT_TRUE(FileCreator::isSafeRelativePath(ok)) << ok;
+  }
+  for (const char* bad : {"", "/etc/passwd", "..", "../a", "a/../b", "a/..",
+                          ".", "./a", "a/./b", "a//b", "a/", "/"}) {
+    EXPECT_FALSE(FileCreator::isSafeRelativePath(bad)) << bad;
+  }
+  EXPECT_FALSE(FileCreator::isSafeRelativePath(std::string("a\0b", 3)));
+}
 
 TEST(BasicTest, ReceiverAcceptTimeout) {
   Wdt& wdt = Wdt::initializeWdt("unit test ReceiverAcceptTimeout");

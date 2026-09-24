@@ -35,6 +35,12 @@ namespace wdt {
  */
 class FileCreator {
  public:
+  /**
+   * Whether a path received from a sender is safe to create under the
+   * receiver's directory: relative, without "..", "." or empty components.
+   */
+  static bool isSafeRelativePath(const std::string& relPath);
+
   FileCreator(const std::string& rootDir, int numThreads,
               TransferLogManager& transferLogManager, bool skipWrites)
       : transferLogManager_(transferLogManager), skipWrites_(skipWrites) {

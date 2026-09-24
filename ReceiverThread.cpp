@@ -471,6 +471,14 @@ ReceiverState ReceiverThread::processFileCmd() {
     return FINISH_WITH_ERROR;
   }
 
+  // Never create (or delete) files outside of the destination directory
+  if (!FileCreator::isSafeRelativePath(blockDetails.fileName)) {
+    WTLOG(ERROR) << "Refusing unsafe file path from the sender: "
+                 << blockDetails.fileName;
+    threadStats_.setLocalErrorCode(PROTOCOL_ERROR);
+    return FINISH_WITH_ERROR;
+  }
+
   // received a well formed file cmd, apply the pending checkpoint update
   checkpointIndex_ = pendingCheckpointIndex_;
   WTVLOG(1) << "Read id:" << blockDetails.fileName
