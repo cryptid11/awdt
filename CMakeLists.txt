@@ -263,7 +263,19 @@ include_directories(${FOLLY_INCLUDE_DIR})
 include_directories(${DOUBLECONV_INCLUDE_DIR})
 include_directories(${GLOG_INCLUDE_DIR})
 include_directories(${GFLAGS_INCLUDE_DIR})
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/..)
+# Sources include their headers as <wdt/...>: that needs the source tree to be
+# in a directory named wdt. Otherwise (e.g. a clone with another name) point
+# a wdt symlink in the build tree at it.
+get_filename_component(WDT_SOURCE_DIR_NAME "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
+if (WDT_SOURCE_DIR_NAME STREQUAL "wdt")
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/..)
+else()
+  set(WDT_INCLUDE_SHIM "${CMAKE_CURRENT_BINARY_DIR}/wdt_source_include")
+  file(MAKE_DIRECTORY "${WDT_INCLUDE_SHIM}")
+  execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${WDT_INCLUDE_SHIM}/wdt")
+  include_directories(${WDT_INCLUDE_SHIM})
+endif()
 
 add_executable(wdtbin wdtCmdLine.cpp ${WDT_FLAGS_RELATED_SRC})
 set_target_properties(wdtbin PROPERTIES COMPILE_DEFINITIONS "STANDALONE_APP")
