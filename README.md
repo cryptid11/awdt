@@ -1,3 +1,16 @@
+# WDT for Android
+
+This fork adds Android support to WDT: the `wdt` command line tool built with
+the NDK, and a Kotlin/Java library (AAR) with a sample app. See
+[android/README.md](android/README.md).
+
+[![Android](https://github.com/cryptid11/awdt/actions/workflows/android.yml/badge.svg)](https://github.com/cryptid11/awdt/actions/workflows/android.yml)
+Builds from `main` are published as the
+[latest pre-release](https://github.com/cryptid11/awdt/releases/tag/latest):
+`wdt-sample-arm64-v8a.apk` is the sample app for most phones.
+
+---
+
 ![](build/wdt_logo.png)
 `WDT` Warp speed Data Transfer
 ------------------------------

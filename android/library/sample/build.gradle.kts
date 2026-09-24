@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Same property as the library (see ../wdt/build.gradle.kts)
+val wdtAbis: List<String> = providers.gradleProperty("wdt.abis")
+    .map { it.split(",").map(String::trim).filter(String::isNotEmpty) }
+    .getOrElse(listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86"))
+
 android {
     namespace = "com.facebook.wdt.sample"
     compileSdk = 35
@@ -15,6 +20,27 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+    }
+
+    signingConfigs {
+        // A fixed debug key (it's public: only for this sample), so builds
+        // from any machine or CI run install over each other
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
+    // One APK per ABI (smaller downloads) plus a universal one
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include(*wdtAbis.toTypedArray())
+            isUniversalApk = true
+        }
     }
 
     buildTypes {

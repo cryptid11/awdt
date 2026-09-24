@@ -131,6 +131,17 @@ directory trees, every encryption mode with checksums, file descriptors, file
 lists, aborts (including from a progress listener), `close()` while waiting,
 and error cases. `JavaApiTest` runs a transfer through the API from Java.
 
+### CI
+
+`.github/workflows/android.yml` builds the AAR, the sample APKs (one per ABI
+plus a universal one) and the `wdt` binaries on every push and pull request,
+and uploads them as the `wdt-android` artifact. Pushes to `main` also update
+the `latest` pre-release, and `v*` tags get a release. The native dependencies
+are cached until `build-deps.sh` changes.
+
+The sample is signed with `sample/debug.keystore`, a public debug key, so that
+new builds install over older ones from any machine or CI run.
+
 `sample/` is a small app that sends 20 MB to itself and shows the result. Its
 `minified` build type runs R8, which checks the library's ProGuard rules:
 `./gradlew :sample:installMinified`.
