@@ -142,8 +142,23 @@ are cached until `build-deps.sh` changes.
 The sample is signed with `sample/debug.keystore`, a public debug key, so that
 new builds install over older ones from any machine or CI run.
 
-`sample/` is a small app that sends 20 MB to itself and shows the result. Its
-`minified` build type runs R8, which checks the library's ProGuard rules:
+### The sample app
+
+`sample/` is a small app built on the library (the APKs attached to the
+releases):
+
+* **Receive files** shows the device's address and a `wdt://` URL to give to
+  the sender (Copy / Share). Received files are saved in `Download/WDT`.
+* **Send**: paste the receiver's URL (or open a `wdt://` link, or share the
+  URL to the app as text), then **Choose files and send**. Files shared to the
+  app from other apps (gallery, file manager...) can be sent the same way.
+* Between two phones: install it on both, on the same Wi-Fi network. With a
+  computer: run `wdt -directory <folder> -connection_url '<URL>'` there to
+  send to the phone, or start `wdt -directory <folder> -hostname <computer IP>`
+  there and paste the URL it prints in the phone to send to the computer.
+* **Run self-test** sends 20 MB to the device itself.
+
+Its `minified` build type runs R8, which checks the library's ProGuard rules:
 `./gradlew :sample:installMinified`.
 
 ## Changes to WDT made for this port

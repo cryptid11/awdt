@@ -18,10 +18,14 @@ class WdtOptions {
     /** Number of parallel connections (default 8). */
     var numPorts: Int? = null
 
-    /** First port the receiver listens on (default 22356), 0 for any free ports. */
+    /**
+     * Receiver: first of the [numPorts] ports to listen on (default 22356).
+     * Only used with [staticPorts]: by default the receiver listens on any
+     * free ports (they are in the connection URL).
+     */
     var startPort: Int? = null
 
-    /** Receiver: fail instead of picking other ports if these are busy. */
+    /** Receiver: listen on [startPort] and the following ports, fail if busy. */
     var staticPorts: Boolean? = null
 
     /** Size of the blocks files are split into, in MB (default 16). */

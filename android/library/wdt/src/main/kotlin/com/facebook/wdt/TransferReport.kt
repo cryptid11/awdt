@@ -12,6 +12,7 @@ class TransferReport internal constructor(
     errorCode: Int,
     /** File data bytes transferred (excluding protocol overhead). */
     val bytesTransferred: Long,
+    /** Files sent. Only counted by the sender: 0 in a receiver's report. */
     val numFiles: Long,
     val numBlocks: Long,
     val totalTimeSeconds: Double,
