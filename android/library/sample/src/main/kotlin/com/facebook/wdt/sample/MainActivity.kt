@@ -157,8 +157,10 @@ class MainActivity : Activity() {
             }
             try {
                 val server = ShareServer(
-                    address.ip, sources.directory, sources.files, sources.totalBytes,
+                    address.ip, sources.directory, sources.shared, sources.totalBytes,
                     options = { transferOptions().apply { progressReportIntervalMillis = 250 } },
+                    deviceName = deviceName(),
+                    webAsset = ::webAsset,
                 )
                 stoppable = server
                 val link = server.link.toString()
@@ -166,7 +168,7 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     shareLinkView.text = link
                     sharePanel.visibility = View.VISIBLE
-                    log("Sharing ${sources.files.size} file(s), ${mb(sources.totalBytes)}: send the link to the other device")
+                    log("Sharing ${sources.shared.size} file(s), ${mb(sources.totalBytes)}: send the link to the other device")
                     if (sharedUris.isNotEmpty()) {
                         sharedUris = emptyList()
                         updateButtons()
@@ -186,6 +188,23 @@ class MainActivity : Activity() {
                     }
 
                     override fun onError(message: String) = runOnUiThread { log("Share: $message") }
+
+                    override fun onWebDownload(address: String, what: String, bytes: Long) = runOnUiThread {
+                        log("$address is downloading $what (${mb(bytes)}) in a browser...")
+                        speedMeter.reset()
+                    }
+
+                    override fun onWebProgress(bytes: Long, total: Long) = showBytes(bytes, total, false)
+
+                    override fun onWebDone(address: String, what: String, bytes: Long, seconds: Double, complete: Boolean) =
+                        runOnUiThread {
+                            if (complete) {
+                                log("Sent $what to $address (browser): ${mb(bytes)} in %.1f s (%.1f MB/s)"
+                                    .format(seconds, if (seconds > 0) bytes / 1e6 / seconds else 0.0))
+                            } else {
+                                log("$address stopped downloading $what (${mb(bytes)} sent)")
+                            }
+                        }
                 })
             } catch (e: Exception) {
                 runOnUiThread { log("Share failed: ${e.message}") }
@@ -463,9 +482,12 @@ class MainActivity : Activity() {
             var server: ShareServer? = null
             try {
                 for (i in 1..20) File(src, "file$i.bin").writeBytes(Random.nextBytes(1 shl 20))
-                val files = src.listFiles()!!.map { WdtSender.SourceFile(it.name) }
+                val files = src.listFiles()!!.map { SharedFile(it.name, it.length(), null, it) }
                 val options = { transferOptions().apply { progressReportIntervalMillis = 100 } }
-                server = ShareServer("127.0.0.1", src, files, 20L shl 20, options, bindAddress = "127.0.0.1")
+                server = ShareServer(
+                    "127.0.0.1", src, files, 20L shl 20, options, "self-test", ::webAsset,
+                    bindAddress = "127.0.0.1",
+                )
                 val serving = executor.submit {
                     server.serve(object : ShareServer.Listener {
                         override fun onProgress(progress: TransferProgress) = showProgress(progress)
@@ -473,6 +495,9 @@ class MainActivity : Activity() {
                         override fun onFinished(address: String, report: TransferReport) =
                             runOnUiThread { logReport("Self-test sent", report) }
                         override fun onError(message: String) = runOnUiThread { log("Self-test: $message") }
+                        override fun onWebDownload(address: String, what: String, bytes: Long) {}
+                        override fun onWebProgress(bytes: Long, total: Long) {}
+                        override fun onWebDone(address: String, what: String, bytes: Long, seconds: Double, complete: Boolean) {}
                     })
                 }
                 // through the text form, like a link pasted by a user
@@ -480,11 +505,15 @@ class MainActivity : Activity() {
                 val download = ShareDownload(link)
                 stoppable = download
                 val report = download.run(dst, options(), ProgressListener {}) { _, _ -> }
+                // and the browser side: the page, and a file over HTTP
+                val page = httpGet(link.port, "/${link.key.toHex()}/")
+                val web = httpGet(link.port, "/${link.key.toHex()}/f/0/x")
                 server.close()
                 serving.get()
                 val identical = src.listFiles()!!.all {
                     it.readBytes().contentEquals(File(dst, it.name).readBytes())
-                }
+                } && web.contentEquals(File(src, files[0].name).readBytes()) &&
+                    String(page).contains("app.js")
                 runOnUiThread {
                     logReport("Self-test received", report)
                     log(if (report.isSuccess && identical) "Self-test: OK, files identical" else "Self-test: FAILED")
@@ -498,6 +527,26 @@ class MainActivity : Activity() {
                 runOnUiThread { setIdle() }
             }
         }
+    }
+
+    /** A body over HTTP from this device (self-test), without redirects. */
+    private fun httpGet(port: Int, path: String): ByteArray =
+        java.net.Socket("127.0.0.1", port).use { socket ->
+            socket.soTimeout = 10_000
+            socket.getOutputStream().write("GET $path HTTP/1.1\r\nHost: self-test\r\n\r\n".toByteArray())
+            val input = java.io.BufferedInputStream(socket.getInputStream())
+            val status = readLine(input) ?: throw ShareException("No HTTP answer")
+            if (!status.startsWith("HTTP/1.1 200")) throw ShareException("HTTP $path: $status")
+            while (readLine(input)?.isNotEmpty() == true) {
+            }
+            input.readBytes()
+        }
+
+    /** The web page's files, served to browsers opening a share link. */
+    private fun webAsset(name: String): ByteArray? = try {
+        assets.open("web/$name").use { it.readBytes() }
+    } catch (e: java.io.IOException) {
+        null
     }
 
     // --------------------------------------------------------------- files
@@ -531,12 +580,14 @@ class MainActivity : Activity() {
     /** Files to send, opened: read through their file descriptors when possible. */
     private inner class Sources(
         val directory: File,
-        val files: List<WdtSender.SourceFile>,
+        val shared: List<SharedFile>,
         val totalBytes: Long,
-        private val opened: List<ParcelFileDescriptor>,
     ) : AutoCloseable {
+        /** For WDT */
+        val files get() = shared.map { it.source }
+
         override fun close() {
-            opened.forEach { it.close() }
+            shared.forEach { it.close() }
             directory.deleteRecursively()
         }
     }
@@ -544,28 +595,24 @@ class MainActivity : Activity() {
     private fun openSources(uris: List<Uri>): Sources {
         // for content that can't be read through a plain file descriptor
         val staging = freshDir(File(cacheDir, "outgoing-${System.nanoTime()}"))
-        val opened = mutableListOf<ParcelFileDescriptor>()
+        val opened = mutableListOf<SharedFile>()
         try {
             val names = HashSet<String>()
-            var total = 0L
-            val files = uris.map { uri ->
+            for (uri in uris) {
                 val name = uniqueName(displayName(uri), names)
                 val pfd = contentResolver.openFileDescriptor(uri, "r")
                     ?: throw IllegalStateException("Can't open $uri")
-                if (pfd.statSize >= 0) {
-                    opened += pfd
-                    total += pfd.statSize
-                    WdtSender.SourceFile.fromFileDescriptor(name, pfd)
+                opened += if (pfd.statSize >= 0) {
+                    SharedFile(name, pfd.statSize, pfd, null)
                 } else {
                     val copy = File(staging, name)
                     ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
                         copy.outputStream().use { input.copyTo(it) }
                     }
-                    total += copy.length()
-                    WdtSender.SourceFile(name)
+                    SharedFile(name, copy.length(), null, copy)
                 }
             }
-            return Sources(staging, files, total, opened)
+            return Sources(staging, opened, opened.sumOf { it.size })
         } catch (e: Exception) {
             opened.forEach { it.close() }
             staging.deleteRecursively()
@@ -608,7 +655,7 @@ class MainActivity : Activity() {
             Intent.ACTION_VIEW -> intent.dataString?.let { acceptLink(it) }
             Intent.ACTION_SEND -> {
                 intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
-                    Regex("""a?wdt://\S+""").find(text)?.let { acceptLink(it.value) }
+                    Regex("""(?:a?wdt|http)://\S+""").find(text)?.let { acceptLink(it.value) }
                 }
                 streamExtra(intent)?.let { sharedUris = listOf(it) }
             }
@@ -655,21 +702,23 @@ class MainActivity : Activity() {
 
     private val speedMeter = SpeedMeter()
 
-    private fun showProgress(p: TransferProgress) = runOnUiThread {
-        val speed = speedMeter.update(p.bytesTransferred)
+    private fun showProgress(p: TransferProgress) = showBytes(p.bytesTransferred, p.totalBytes, p.isDone)
+
+    private fun showBytes(bytes: Long, total: Long, done: Boolean) = runOnUiThread {
+        val speed = speedMeter.update(bytes)
         val rate = if (speed > 0) "  ·  %.1f MB/s".format(speed) else ""
-        if (p.totalBytes > 0) {
+        if (total > 0) {
             progressBar.isIndeterminate = false
-            progressBar.progress = p.percent
-            val left = if (speed > 0.05 && !p.isDone) {
-                val seconds = ((p.totalBytes - p.bytesTransferred) / 1e6 / speed).toInt()
+            progressBar.progress = (bytes * 100 / total).toInt()
+            val left = if (speed > 0.05 && !done) {
+                val seconds = ((total - bytes) / 1e6 / speed).toInt()
                 "  ·  %d:%02d left".format(seconds / 60, seconds % 60)
             } else {
                 ""
             }
-            progressText.text = "%s / %s%s%s".format(mb(p.bytesTransferred), mb(p.totalBytes), rate, left)
+            progressText.text = "%s / %s%s%s".format(mb(bytes), mb(total), rate, left)
         } else {
-            progressText.text = mb(p.bytesTransferred) + rate
+            progressText.text = mb(bytes) + rate
         }
     }
 
@@ -845,7 +894,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
-        sharePanel.addView(text("Link to send to the other device:", 14f), margins(top = 12))
+        sharePanel.addView(text("Link to send to the other device, to open in a browser or in this app:", 14f), margins(top = 12))
         shareLinkView = text("", 13f, mono = true).apply { setTextIsSelectable(true) }
         sharePanel.addView(shareLinkView, margins(top = 4))
         sharePanel.addView(
@@ -856,8 +905,9 @@ class MainActivity : Activity() {
         )
         sharePanel.addView(
             text(
-                "The other device opens it in this app. Anyone with the link on this " +
-                    "network can download these files, until you tap Stop.",
+                "Computers download in a browser (unencrypted on this network), phones " +
+                    "with this app faster through WDT. Anyone with the link on this network " +
+                    "can download these files, until you tap Stop.",
                 13f, secondary = true,
             ),
             margins(top = 4),
@@ -983,7 +1033,7 @@ class MainActivity : Activity() {
         if (value.isNullOrEmpty()) {
             log("The clipboard is empty")
         } else {
-            linkInput.setText(Regex("""a?wdt://\S+""").find(value)?.value ?: value)
+            linkInput.setText(Regex("""(?:a?wdt|http)://\S+""").find(value)?.value ?: value)
         }
     }
 

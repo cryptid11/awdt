@@ -39,10 +39,11 @@ same network.
 
 ## Download a link shared from the phone
 
-When the app shares files with an `awdt://` link:
+When the app shares files with a link, open it in a browser, or download
+with WDT (faster, and encrypted):
 
 ```sh
-awdt get awdt://192.168.1.105:44647/b3891fe9e80b42ba75194e88ed3514d8 ~/Downloads
+awdt get http://192.168.1.34:40195/482a7b0c9f382014056844c752d3d08a ~/Downloads
 ```
 
 ## Firewall

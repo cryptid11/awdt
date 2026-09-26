@@ -9,7 +9,7 @@
 //
 //   awdt receive <folder> [--auto-accept]   be a target for "Send to a nearby
 //                                           device" in the app
-//   awdt get <awdt://link> [folder]         download a link shared by the app
+//   awdt get <link> [folder]                download a link shared by the app
 //
 // Both use WDT for the transfer itself. Around it, small line based
 // handshakes (the same as in the app, see android/README.md):
@@ -24,7 +24,7 @@
 //   The public keys are P-256 (base64 SubjectPublicKeyInfo); the WDT
 //   encryption key is derived from their ECDH secret, so it's never sent.
 //   The app then WDT-sends to the url, at the address it connected to.
-// Share links (awdt://<host>:<port>/<key>), TCP to the app:
+// Share links (http://<host>:<port>/<key>, or awdt://...), TCP to the app:
 //   awdt -> app        AWDT/1 HELLO <sha256("awdt-proof" + key)>
 //   app -> awdt        AWDT/1 OFFER <files> <bytes>
 //   awdt -> app        AWDT/1 RECEIVER <wdt url without key>
@@ -634,10 +634,10 @@ int cmdReceive(const ReceiveConfig& config) {
 
 int cmdGet(const std::string& linkText, const fs::path& folder) {
   static const std::regex linkRe(
-      R"(^awdt://(\[[0-9a-fA-F:.]+\]|[^:/\[\]]+):(\d{1,5})/([0-9a-fA-F]{32})/?$)");
+      R"(^(?:awdt|http)://(\[[0-9a-fA-F:.]+\]|[^:/\[\]]+):(\d{1,5})/([0-9a-fA-F]{32})/?$)");
   std::smatch m;
   if (!std::regex_match(linkText, m, linkRe)) {
-    throw Error("not a valid link (awdt://<host>:<port>/<32 hex digits>)");
+    throw Error("not a valid link (http://<host>:<port>/<32 hex digits>)");
   }
   std::string host = m[1];
   if (host.front() == '[') {
@@ -677,7 +677,7 @@ void usage(std::ostream& out) {
          "      Waits for files sent with \"Send to a nearby device\" in the app,\n"
          "      and saves them in <folder>. Asks before each transfer, unless\n"
          "      --auto-accept (then anyone on the network can send files here).\n"
-         "  awdt get <awdt://link> [folder]\n"
+         "  awdt get <link> [folder]\n"
          "      Downloads the files shared with a link from the app (default\n"
          "      folder: the current one).\n\n"
          "Options:\n"

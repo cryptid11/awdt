@@ -150,12 +150,18 @@ releases). The devices need to be on the same network:
 * **Send to a computer**: computers running `awdt receive <folder>` (see
   [desktop/README.md](../desktop/README.md)) are listed under **Send**; tap
   one and choose the files. If none is found, type the computer's address.
-* **Send to a phone**: *Choose files to share*, then send the `awdt://` link it shows to
-  the other device (*Copy link* / *Share link*). Files shared to the app from
-  other apps (gallery, file manager...) can be shared the same way. The link
-  works, for anyone who has it, until *Stop*.
-* **Receive**: open the link (tap it, or *Paste* it and tap *Download*).
-  Received files are saved in `Download/WDT`.
+* **Share with a link**: *Choose files to share*, then send the
+  `http://<phone address>:<port>/<key>` link it shows (*Copy link* / *Share
+  link*). Files shared to the app from other apps (gallery, file manager...)
+  can be shared the same way. The link works, for anyone who has it on the
+  network, until *Stop*:
+  * **in a browser** (a computer, or any phone): a page lists the files, with
+    a download button each and *Download all* (a zip). Plain HTTP:
+    unencrypted on the local network. Downloads can be resumed.
+  * **in this app** (another phone): *Paste* it and tap *Download*, or tap
+    *Open in the WDT app* on the page: faster, and encrypted, with WDT.
+  * `awdt get <link>` on a computer, also with WDT.
+* **Receive**: received files are saved in `Download/WDT`.
 * **With a computer** (the `wdt` command line tool): *Receive from a computer*
   shows a `wdt://` URL to pass to `wdt -directory <folder> -connection_url
   '<URL>'` there. To send to a computer, run `wdt -directory <folder>
@@ -167,8 +173,11 @@ WDT's receiver listens and its sender connects to the receiver's URL, so
 share links need a small handshake first (`sample/.../Share.kt`): the sharing
 device listens for it, the downloading device starts a WDT receiver and sends
 back its ports, and the sharing device then WDT-sends to it. The link carries
-the transfer's encryption key (`WdtReceiver`'s `encryptionKey`), which never
-goes over the network.
+the transfer's encryption key (`WdtReceiver`'s `encryptionKey`). The same
+port serves browsers (`WebShare.kt`, the page is in `sample/src/main/assets/web`):
+the first line of each connection tells which it is. Browsers send the link's
+key in the clear, so on an untrusted network, prefer the app or `awdt get`,
+and keep the link private.
 
 Its `minified` build type runs R8, which checks the library's ProGuard rules:
 `./gradlew :sample:installMinified`.

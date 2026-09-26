@@ -12,8 +12,11 @@ import com.facebook.wdt.TransferReport
 import com.facebook.wdt.WdtOptions
 import com.facebook.wdt.WdtReceiver
 import com.facebook.wdt.WdtSender
+import java.io.BufferedInputStream
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
@@ -22,6 +25,8 @@ import java.net.Socket
 import java.net.SocketException
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 
 /*
  * Share links: the device with the files shares a link, the other one opens
@@ -38,29 +43,41 @@ import java.security.SecureRandom
  *   downloader -> sharer   AWDT/1 RECEIVER <its wdt:// URL, without the key>
  *   sharer                 WDT-sends to that URL (host: the connection's peer)
  *
- * The link is awdt://<host>:<port>/<key>: the 16 byte key encrypts the WDT
- * transfer and never goes over the network; the proof is a hash of it.
+ * The link is http://<host>:<port>/<key> (or awdt://..., the older form):
+ * the 16 byte key encrypts the WDT transfer, and the proof is a hash of it.
+ *
+ * The same port also serves browsers (WebShare.kt): opening the link in one
+ * shows the files, downloaded over plain HTTP. The first line of each
+ * connection tells which it is. Browsers send the key in the clear (it's in
+ * the address), so the link is the secret, protected by nothing more than
+ * the local network.
  */
 
 internal const val PROTOCOL = "AWDT/1"
-private const val LINK_SCHEME = "awdt://"
 
 /** Placeholder host in the downloader's URL, replaced by the sharer. */
 internal const val RECEIVER_HOST = "receiver"
 
 class ShareLink(val host: String, val port: Int, val key: ByteArray) {
-    override fun toString(): String {
-        val h = if (host.contains(':')) "[$host]" else host
-        return "$LINK_SCHEME$h:$port/${key.toHex()}"
-    }
+    private val hostPart get() = if (host.contains(':')) "[$host]" else host
+
+    /** What to share: opens in a browser, or in this app. */
+    override fun toString() = "http://$hostPart:$port/${key.toHex()}"
+
+    /** Opens this app (for the page's "Open in the app" button). */
+    fun appLink() = "awdt://$hostPart:$port/${key.toHex()}"
 
     companion object {
-        fun isLink(text: String) = text.trim().startsWith(LINK_SCHEME)
+        private val LINK = Regex("""^(?:awdt|http)://(\[[0-9a-fA-F:.]+]|[^:/\[\]]+):(\d{1,5})/([0-9a-fA-F]{32})/?$""")
+
+        /** Whether [text] looks like a share link (valid or not) */
+        fun isLink(text: String) = text.trim().let {
+            it.startsWith("awdt://") || (it.startsWith("http://") && parse(it) != null)
+        }
 
         /** @return null if [text] isn't a valid share link */
         fun parse(text: String): ShareLink? {
-            val m = Regex("""^awdt://(\[[0-9a-fA-F:.]+]|[^:/\[\]]+):(\d{1,5})/([0-9a-fA-F]{32})/?$""")
-                .matchEntire(text.trim()) ?: return null
+            val m = LINK.matchEntire(text.trim()) ?: return null
             val port = m.groupValues[2].toInt().takeIf { it in 1..65535 } ?: return null
             return ShareLink(m.groupValues[1].trim('[', ']'), port, m.groupValues[3].hexToBytes())
         }
@@ -93,8 +110,11 @@ internal fun senderUrl(receiverUrl: String, host: String, key: ByteArray): Strin
 
 private fun String.hexToBytes() = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
-internal class LineConnection(val socket: Socket) : AutoCloseable {
-    private val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+internal class LineConnection(
+    val socket: Socket,
+    input: InputStream = socket.getInputStream(),
+) : AutoCloseable {
+    private val reader = BufferedReader(InputStreamReader(input, Charsets.UTF_8))
     private val writer = OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8)
 
     fun send(vararg words: String) {
@@ -103,8 +123,10 @@ internal class LineConnection(val socket: Socket) : AutoCloseable {
     }
 
     /** The words after the protocol tag; throws on anything unexpected. */
-    fun receive(expected: String): List<String> {
-        val line = reader.readLine() ?: throw ShareException("Connection closed")
+    fun receive(expected: String): List<String> =
+        parse(reader.readLine() ?: throw ShareException("Connection closed"), expected)
+
+    fun parse(line: String, expected: String): List<String> {
         if (line.length > 8192) throw ShareException("Message too long")
         val words = line.split(' ')
         if (words.size < 2 || words[0] != PROTOCOL) throw ShareException("Not a WDT share: $line")
@@ -117,15 +139,19 @@ internal class LineConnection(val socket: Socket) : AutoCloseable {
 }
 
 /**
- * Serves [files] (taken from [directory]) to whoever opens [link], one
- * downloader after the other, until [close].
+ * Serves [files] (read from [directory] when they don't have a file
+ * descriptor) to whoever opens [link], in this app (with WDT, one downloader
+ * after the other) or in a browser, until [close].
  */
 class ShareServer(
     host: String,
     private val directory: File,
-    private val files: List<WdtSender.SourceFile>,
+    private val files: List<SharedFile>,
     private val totalBytes: Long,
     private val options: () -> WdtOptions,
+    private val deviceName: String,
+    /** The web page's files (index.html, app.js, style.css) */
+    private val webAsset: (String) -> ByteArray?,
     bindAddress: String? = null,
 ) : AutoCloseable {
     private val key = ShareLink.newKey()
@@ -142,7 +168,11 @@ class ShareServer(
     @Volatile
     private var sender: WdtSender? = null
 
-    interface Listener : ProgressListener {
+    /** WDT transfers one at a time (browsers download in parallel). */
+    private val wdtLock = Any()
+    private val connections = Collections.newSetFromMap(ConcurrentHashMap<Socket, Boolean>())
+
+    interface Listener : ProgressListener, WebShare.Listener {
         fun onDownloaderConnected(address: String)
 
         fun onFinished(address: String, report: TransferReport)
@@ -152,6 +182,7 @@ class ShareServer(
 
     /** Accepts downloaders until [close]; blocking. */
     fun serve(listener: Listener) {
+        val web = WebShare(files, key.toHex(), deviceName, link.appLink(), webAsset, listener)
         while (!closed) {
             val socket = try {
                 server.accept()
@@ -159,31 +190,47 @@ class ShareServer(
                 if (closed) return
                 throw e
             }
-            val peer = socket.inetAddress
-            val address = peer.hostAddress ?: "?"
-            try {
-                LineConnection(socket).use { conn ->
-                    socket.soTimeout = 30_000
-                    val (theirProof) = conn.receive("HELLO")
-                    if (!MessageDigest.isEqual(theirProof.toByteArray(), proof(key).toByteArray())) {
-                        conn.send("ERROR", "wrong link")
-                        throw ShareException("$address: wrong link, refused")
-                    }
-                    conn.send("OFFER", files.size.toString(), totalBytes.toString())
-                    val receiverUrl = conn.receive("RECEIVER").singleOrNull()
-                        ?: throw ShareException("$address: bad receiver URL")
-                    listener.onDownloaderConnected(address)
-                    val url = senderUrl(receiverUrl, address, key)
-                    WdtSender(url, directory, options(), files).use { s ->
-                        sender = s
-                        if (closed) s.abort()
-                        val report = s.transfer(listener)
-                        sender = null
-                        listener.onFinished(address, report)
-                    }
+            connections += socket
+            Thread({
+                try {
+                    handle(socket, web, listener)
+                } catch (e: Exception) {
+                    if (!closed) listener.onError(e.message ?: e.toString())
+                } finally {
+                    connections -= socket
+                    socket.close()
                 }
-            } catch (e: Exception) {
-                if (!closed) listener.onError(e.message ?: e.toString())
+            }, "wdt-share").apply { isDaemon = true }.start()
+        }
+    }
+
+    private fun handle(socket: Socket, web: WebShare, listener: Listener) {
+        val address = socket.inetAddress.hostAddress ?: "?"
+        socket.soTimeout = 30_000
+        val input = BufferedInputStream(socket.getInputStream(), 64 * 1024)
+        val first = readLine(input) ?: return
+        if (!first.startsWith("$PROTOCOL ")) {
+            web.handle(first, input, socket.getOutputStream(), address)
+            return
+        }
+        val conn = LineConnection(socket, input)
+        val (theirProof) = conn.parse(first, "HELLO")
+        if (!MessageDigest.isEqual(theirProof.toByteArray(), proof(key).toByteArray())) {
+            conn.send("ERROR", "wrong link")
+            throw ShareException("$address: wrong link, refused")
+        }
+        conn.send("OFFER", files.size.toString(), totalBytes.toString())
+        val receiverUrl = conn.receive("RECEIVER").singleOrNull()
+            ?: throw ShareException("$address: bad receiver URL")
+        synchronized(wdtLock) {
+            if (closed) return
+            listener.onDownloaderConnected(address)
+            val url = senderUrl(receiverUrl, address, key)
+            WdtSender(url, directory, options(), files.map { it.source }).use { s ->
+                sender = s
+                val report = s.transfer(listener)
+                sender = null
+                listener.onFinished(address, report)
             }
         }
     }
@@ -192,8 +239,24 @@ class ShareServer(
         closed = true
         server.close()
         sender?.abort()
+        connections.forEach { it.close() } // browsers' downloads
     }
+}
 
+/**
+ * A line of at most 8 KB (without its line end), decoded as UTF-8; null at
+ * the end of the stream.
+ */
+internal fun readLine(input: InputStream): String? {
+    val bytes = ByteArrayOutputStream()
+    while (true) {
+        val b = input.read()
+        if (b < 0) return if (bytes.size() == 0) null else bytes.toString("UTF-8")
+        if (b == '\n'.code) break
+        if (bytes.size() >= 8192) throw ShareException("Line too long")
+        bytes.write(b)
+    }
+    return bytes.toString("UTF-8").trimEnd('\r')
 }
 
 /** The downloading side of a share link. */

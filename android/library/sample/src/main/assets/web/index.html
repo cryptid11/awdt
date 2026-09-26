@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>WDT · Shared files</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <p class="brand">WDT</p>
+      <h1 id="title">Shared files</h1>
+      <p id="subtitle" class="muted">Loading…</p>
+    </header>
+
+    <ul id="files" class="files" aria-live="polite"></ul>
+
+    <div class="actions">
+      <a id="all" class="button primary" hidden>Download all</a>
+      <a id="app" class="button" hidden>Open in the WDT app (faster)</a>
+    </div>
+
+    <p id="error" class="error" hidden>
+      This share isn't available anymore: it was stopped on the phone, or the
+      phone left the network.
+    </p>
+
+    <footer class="muted">
+      Sent directly from the phone over your local network, without
+      encryption. Anyone with this link on the network can download the
+      files while they're shared.
+    </footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

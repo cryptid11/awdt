@@ -7,10 +7,11 @@ the NDK, and a Kotlin/Java library (AAR) with a sample app. See
 [![Android](https://github.com/cryptid11/awdt/actions/workflows/android.yml/badge.svg)](https://github.com/cryptid11/awdt/actions/workflows/android.yml)
 Builds from `main` are published as the
 [latest pre-release](https://github.com/cryptid11/awdt/releases/tag/latest):
-`wdt-sample-arm64-v8a.apk` is the sample app for most phones: it sends files
-to computers running `awdt receive ~/Downloads --auto-accept`
-(`awdt-linux-x86_64`, see [desktop/README.md](desktop/README.md)), and to
-other phones with a link (same network).
+`wdt-sample-arm64-v8a.apk` is the sample app for most phones: it shares
+files with a link that opens in any browser on the same network (or in the
+app on another phone), and sends them to computers running
+`awdt receive ~/Downloads --auto-accept` (`awdt-linux-x86_64`, see
+[desktop/README.md](desktop/README.md)).
 
 ---
 
