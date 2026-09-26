@@ -48,8 +48,8 @@ awdt get awdt://192.168.1.105:44647/b3891fe9e80b42ba75194e88ed3514d8 ~/Downloads
 ## Firewall
 
 The phone connects to the computer: if you use a firewall, allow UDP port
-22355 (discovery) and TCP ports 22355-22363 (22356-22363 are WDT's), e.g.
-`sudo ufw allow 22355/udp && sudo ufw allow 22355:22363/tcp`. If the phone
+22355 (discovery) and TCP ports 22355-22358 (22356-22358 are WDT's), e.g.
+`sudo ufw allow 22355/udp && sudo ufw allow 22355:22358/tcp`. If the phone
 can't find the computer (some networks block broadcasts), type the computer's
 address in the app instead.
 

@@ -46,8 +46,10 @@
 #include <wdt/util/EncryptionUtils.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -65,7 +67,9 @@ namespace {
 
 constexpr int kDefaultPort = 22355;  // discovery (UDP) and pushes (TCP)
 constexpr int kWdtStartPort = 22356;  // WDT's own default ports
-constexpr int kWdtNumPorts = 8;
+// Parallel connections: more don't help on Wi-Fi (measured: 3 are as fast
+// as 8 from a phone), they only compete with each other
+constexpr int kWdtNumPorts = 3;
 constexpr const char* kProtocol = "AWDT/1";
 // Host placeholder in our wdt url: the app uses the address it connected to
 constexpr const char* kReceiverHost = "receiver";
@@ -354,6 +358,70 @@ std::string urlWithoutKey(const std::string& url) {
   return out;
 }
 
+/// One line of progress on the terminal: amount, speed averaged over the
+/// last 5 s (WDT's own "recent throughput" swings between 0 and huge values
+/// on Wi-Fi, which delivers in bursts; and the receiver counts data in
+/// blocks of up to 16 MB) and time left
+class TerminalProgress : public ProgressReporter {
+ public:
+  explicit TerminalProgress(const WdtTransferRequest& req)
+      : ProgressReporter(req), tty_(isatty(STDOUT_FILENO)) {
+  }
+
+  void start() override {
+  }
+
+  void progress(const std::unique_ptr<TransferReport>& report) override {
+    if (!tty_) {
+      return;
+    }
+    using Clock = std::chrono::steady_clock;
+    const int64_t bytes = report->getSummary().getEffectiveDataBytes();
+    const int64_t total = report->getTotalFileSize();
+    const Clock::time_point now = Clock::now();
+    samples_.emplace_back(now, bytes);
+    while (samples_.size() > 2 &&
+           now - samples_.front().first > std::chrono::seconds(5)) {
+      samples_.pop_front();
+    }
+    double speed = 0;  // MB/s
+    const double seconds =
+        std::chrono::duration<double>(now - samples_.front().first).count();
+    if (seconds > 0.5) {
+      speed = (bytes - samples_.front().second) / 1e6 / seconds;
+    }
+    char line[160];
+    if (total > 0) {
+      const int percent = static_cast<int>(100 * bytes / total);
+      char eta[32] = "";
+      if (speed > 0.05) {
+        const int left = static_cast<int>((total - bytes) / 1e6 / speed);
+        snprintf(eta, sizeof(eta), "  %d:%02d left", left / 60, left % 60);
+      }
+      snprintf(line, sizeof(line), "  %3d%%  %s / %s  %.1f MB/s%s", percent,
+               humanBytes(bytes).c_str(), humanBytes(total).c_str(), speed, eta);
+    } else {
+      snprintf(line, sizeof(line), "  %s  %.1f MB/s", humanBytes(bytes).c_str(),
+               speed);
+    }
+    std::cout << "\r" << line << "\x1b[K" << std::flush;  // \x1b[K: clear the rest
+  }
+
+  void end(const std::unique_ptr<TransferReport>& /* report */) override {
+    clearLine();
+  }
+
+  static void clearLine() {
+    if (isatty(STDOUT_FILENO)) {
+      std::cout << "\r\x1b[K" << std::flush;
+    }
+  }
+
+ private:
+  const bool tty_;
+  std::deque<std::pair<std::chrono::steady_clock::time_point, int64_t>> samples_;
+};
+
 /// A WDT receiver with the given key, listening (preferably on WDT's usual
 /// ports, easier to allow in a firewall)
 std::unique_ptr<Receiver> startReceiver(const fs::path& dir,
@@ -373,6 +441,10 @@ std::unique_ptr<Receiver> startReceiver(const fs::path& dir,
     options.read_timeout_millis = 30000;
     options.write_timeout_millis = 30000;
     options.enable_download_resumption = false;
+    options.progress_report_interval_millis = 250;
+    std::unique_ptr<ProgressReporter> progress =
+        std::make_unique<TerminalProgress>(receiver->getTransferRequest());
+    receiver->setProgressReporter(progress);
     const WdtTransferRequest& ready = receiver->init();
     if (ready.errorCode != OK && ready.errorCode != FEWER_PORTS) {
       continue;  // ports busy: any free ports
@@ -414,6 +486,7 @@ std::vector<fs::path> moveReceived(const fs::path& staging,
 bool finishReceive(Receiver& receiver, const fs::path& staging,
                    const fs::path& dest, const std::string& from) {
   std::unique_ptr<TransferReport> report = receiver.finish();
+  TerminalProgress::clearLine();
   ErrorCode code = report->getSummary().getErrorCode();
   if (code != OK) {
     fs::remove_all(staging);
@@ -611,7 +684,7 @@ void usage(std::ostream& out) {
          "  -v, --verbose   WDT's logs\n"
          "  --name <name>   shown in the app (default: this computer's name)\n"
          "  --port <port>   discovery and control port (default 22355; the app\n"
-         "                  finds receivers on 22355). WDT itself uses 22356-22363\n"
+         "                  finds receivers on 22355). WDT itself uses 22356-22358\n"
          "                  when free.\n";
 }
 

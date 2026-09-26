@@ -653,15 +653,23 @@ class MainActivity : Activity() {
 
     private val progressListener = ProgressListener { showProgress(it) }
 
+    private val speedMeter = SpeedMeter()
+
     private fun showProgress(p: TransferProgress) = runOnUiThread {
+        val speed = speedMeter.update(p.bytesTransferred)
+        val rate = if (speed > 0) "  ·  %.1f MB/s".format(speed) else ""
         if (p.totalBytes > 0) {
             progressBar.isIndeterminate = false
             progressBar.progress = p.percent
-            progressText.text = "%s / %s  ·  %.1f MB/s".format(
-                mb(p.bytesTransferred), mb(p.totalBytes), p.currentThroughputMBps,
-            )
+            val left = if (speed > 0.05 && !p.isDone) {
+                val seconds = ((p.totalBytes - p.bytesTransferred) / 1e6 / speed).toInt()
+                "  ·  %d:%02d left".format(seconds / 60, seconds % 60)
+            } else {
+                ""
+            }
+            progressText.text = "%s / %s%s%s".format(mb(p.bytesTransferred), mb(p.totalBytes), rate, left)
         } else {
-            progressText.text = "%s  ·  %.1f MB/s".format(mb(p.bytesTransferred), p.currentThroughputMBps)
+            progressText.text = mb(p.bytesTransferred) + rate
         }
     }
 
@@ -681,6 +689,9 @@ class MainActivity : Activity() {
      * default 5 s socket timeouts, connections would be dropped and reopened.
      */
     private fun transferOptions() = WdtOptions().apply {
+        // Connections, when this device receives (the receiver decides): more
+        // don't help on Wi-Fi (measured: 3 are as fast as 8 from a phone)
+        numPorts = 3
         readTimeoutMillis = 30_000
         writeTimeoutMillis = 30_000
     }
@@ -710,6 +721,7 @@ class MainActivity : Activity() {
         progressBar.visibility = View.VISIBLE
         progressBar.isIndeterminate = true
         progressText.text = ""
+        speedMeter.reset()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
@@ -812,12 +824,15 @@ class MainActivity : Activity() {
             textSize = 14f
         }
         addressButton = button("Send") { onAddressClicked() }
+        column.addView(searchButton, margins(top = 4))
         column.addView(
             LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                addView(searchButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-                addView(addressInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f))
-                addView(addressButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.6f))
+                addView(addressInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(
+                    addressButton,
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+                )
             },
         )
         column.addView(
