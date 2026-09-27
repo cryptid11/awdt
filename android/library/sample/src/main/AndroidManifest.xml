@@ -3,6 +3,8 @@
     <!-- Wi-Fi / wake locks: no radio power saving during transfers -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="WDT"
         android:theme="@style/AppTheme">
         <!-- configChanges: rotating etc. must not restart the activity (and
