@@ -287,7 +287,17 @@ target_link_libraries(wdtbin wdt_min)
 if (NOT ANDROID)
   option(WDT_BUILD_AWDT "Build awdt, to receive files from the Android app" ON)
   if (WDT_BUILD_AWDT)
-    add_executable(awdt desktop/awdt.cpp)
+    # The hub's web page (desktop/hub), compiled in
+    set(AWDT_HUB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/desktop/hub")
+    set(AWDT_HUB_HEADER "${CMAKE_CURRENT_BINARY_DIR}/awdt_hub_files.h")
+    add_custom_command(OUTPUT "${AWDT_HUB_HEADER}"
+      COMMAND ${CMAKE_COMMAND} -DDIR=${AWDT_HUB_DIR} -DOUT=${AWDT_HUB_HEADER}
+              -P "${CMAKE_CURRENT_SOURCE_DIR}/desktop/embed.cmake"
+      DEPENDS "${AWDT_HUB_DIR}/index.html" "${AWDT_HUB_DIR}/app.js"
+              "${AWDT_HUB_DIR}/style.css" "${CMAKE_CURRENT_SOURCE_DIR}/desktop/embed.cmake"
+      COMMENT "Embedding the hub page")
+    add_executable(awdt desktop/awdt.cpp "${AWDT_HUB_HEADER}")
+    target_include_directories(awdt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
     target_link_libraries(awdt wdt_min)
     install(TARGETS awdt RUNTIME DESTINATION bin)
   endif()

@@ -110,7 +110,11 @@ class WebShare(
         when {
             rest.isEmpty() -> send(output, 302, "Found", "text/plain", ByteArray(0), extra = mapOf("Location" to "/$keyHex/"))
             rest == listOf("") -> page(output, "index.html", head)
-            rest == listOf("files.json") -> send(output, 200, "OK", "application/json", filesJson(), head = head)
+            // readable by pages elsewhere on the network: a hub (awdt --hub) lists them
+            rest == listOf("files.json") -> send(
+                output, 200, "OK", "application/json", filesJson(),
+                extra = mapOf("Access-Control-Allow-Origin" to "*"), head = head,
+            )
             rest == listOf("all.zip") -> zip(output, address, head)
             rest.size == 1 && rest[0] in listOf("app.js", "style.css") -> page(output, rest[0], head)
             rest.size >= 2 && rest[0] == "f" -> {

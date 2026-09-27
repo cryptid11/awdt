@@ -179,6 +179,9 @@ releases). The devices need to be on the same network:
     *Open in the WDT app* on the page: faster, and encrypted, with WDT.
   * `awdt get <link>` on a computer, also with WDT.
 * **Receive**: received files are saved in `Download/WDT`.
+* **Hubs**: while it's open or sharing, the app announces itself on the
+  network, so computers running `awdt receive --hub` list it (and its share,
+  unless "Show my shares to hubs on this network" is off) on their hub page.
 * **With a computer** (the `wdt` command line tool): *Receive from a computer*
   shows a `wdt://` URL to pass to `wdt -directory <folder> -connection_url
   '<URL>'` there. To send to a computer, run `wdt -directory <folder>

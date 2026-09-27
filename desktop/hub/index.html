@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>WDT hub</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <p class="brand">WDT</p>
+      <h1>Devices on this network</h1>
+      <p id="subtitle" class="muted">Looking for devices…</p>
+    </header>
+
+    <section id="sharing" aria-live="polite"></section>
+    <section id="others"></section>
+
+    <p id="empty" class="empty" hidden>
+      No devices yet. Open the WDT app on a phone connected to this network:
+      it shows up here, with the files it shares.
+    </p>
+    <p id="offline" class="error" hidden>
+      Can't reach the hub: is awdt still running?
+    </p>
+
+    <footer class="muted">
+      Files come straight from the phones over your local network, without
+      encryption. Phones only appear while the WDT app is open or sharing.
+    </footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

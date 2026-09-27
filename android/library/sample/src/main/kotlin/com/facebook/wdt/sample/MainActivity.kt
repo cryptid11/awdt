@@ -34,6 +34,7 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -101,6 +102,14 @@ class MainActivity : Activity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var progressText: TextView
     private lateinit var logView: TextView
+    private lateinit var visibleCheck: CheckBox
+
+    /** Tells hubs on the network about this device and its share. */
+    private val announcer = Announcer { deviceName() }
+
+    /** The running share (for the announcer). */
+    @Volatile
+    private var currentShare: ShareLink? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,6 +120,23 @@ class MainActivity : Activity() {
         showAddress()
         handleIntent(intent)
         searchNearby()
+        announcer.start()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        announcer.active = true
+        announcer.poke()
+    }
+
+    override fun onPause() {
+        announcer.active = false // still announced while sharing
+        super.onPause()
+    }
+
+    private fun updateAnnouncedShare() {
+        announcer.share = currentShare?.takeIf { visibleCheck.isChecked }
+        announcer.poke()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -120,6 +146,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        announcer.stop()
         // may wait for a transfer to stop: not on the UI thread
         stoppable?.let { executor.execute { it.close() } }
         executor.shutdown()
@@ -163,6 +190,8 @@ class MainActivity : Activity() {
                     webAsset = ::webAsset,
                 )
                 stoppable = server
+                currentShare = server.link
+                runOnUiThread { updateAnnouncedShare() }
                 val link = server.link.toString()
                 Log.i(TAG, "Share link: $link")
                 runOnUiThread {
@@ -210,7 +239,9 @@ class MainActivity : Activity() {
                 runOnUiThread { log("Share failed: ${e.message}") }
             } finally {
                 sources.close()
+                currentShare = null
                 runOnUiThread {
+                    updateAnnouncedShare()
                     sharePanel.visibility = View.GONE
                     log("Stopped sharing")
                     setIdle()
@@ -885,11 +916,22 @@ class MainActivity : Activity() {
             },
         )
         column.addView(
-            text("Or to another phone, with a link it opens in this app:", 14f, secondary = true),
+            text("Or share a link, for browsers and other phones:", 14f, secondary = true),
             margins(top = 12),
         )
         shareButton = button("Choose files to share") { onShareClicked() }
             .also { column.addView(it, margins(top = 4)) }
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        visibleCheck = CheckBox(this).apply {
+            text = "Show my shares to hubs on this network (anyone on it can then download them)"
+            textSize = 13f
+            isChecked = prefs.getBoolean("visible_to_hubs", true)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean("visible_to_hubs", checked).apply()
+                updateAnnouncedShare()
+            }
+        }
+        column.addView(visibleCheck, margins(top = 4))
         sharePanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE

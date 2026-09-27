@@ -24,13 +24,19 @@
 //   The public keys are P-256 (base64 SubjectPublicKeyInfo); the WDT
 //   encryption key is derived from their ECDH secret, so it's never sent.
 //   The app then WDT-sends to the url, at the address it connected to.
+// Presence, UDP broadcasts from the app every few seconds while it's open or
+// sharing (listed by the hub page, see below):
+//   app -> broadcast   AWDT/1 ANNOUNCE <share port|0> <share key|-> <name>
 // Share links (http://<host>:<port>/<key>, or awdt://...), TCP to the app:
 //   awdt -> app        AWDT/1 HELLO <sha256("awdt-proof" + key)>
 //   app -> awdt        AWDT/1 OFFER <files> <bytes>
 //   awdt -> app        AWDT/1 RECEIVER <wdt url without key>
 
 #include <arpa/inet.h>
+#include <awdt_hub_files.h>  // generated from desktop/hub
 #include <glog/logging.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <openssl/core_names.h>
@@ -52,6 +58,9 @@
 #include <deque>
 #include <filesystem>
 #include <iostream>
+#include <map>
+#include <mutex>
+#include <set>
 #include <memory>
 #include <regex>
 #include <sstream>
@@ -66,6 +75,7 @@ using namespace facebook::wdt;
 namespace {
 
 constexpr int kDefaultPort = 22355;  // discovery (UDP) and pushes (TCP)
+constexpr int kDefaultHubPort = 22350;  // the hub's web page
 constexpr int kWdtStartPort = 22356;  // WDT's own default ports
 // Parallel connections: more don't help on Wi-Fi (measured: 3 are as fast
 // as 8 from a phone), they only compete with each other
@@ -520,6 +530,7 @@ struct ReceiveConfig {
   bool autoAccept = false;
   std::string name;
   int port = kDefaultPort;
+  int hubPort = 0;  // 0: no hub page
 };
 
 bool ask(const std::string& question) {
@@ -537,12 +548,142 @@ bool ask(const std::string& question) {
   return line == "y" || line == "Y" || line == "yes";
 }
 
-void answerDiscovery(int fd, const ReceiveConfig& config) {
+// ------------------------------------------------------------------- hub
+
+/// IPv4 addresses of this computer, with their broadcast addresses
+std::vector<std::pair<std::string, std::string>> localAddresses() {
+  std::vector<std::pair<std::string, std::string>> out;
+  ifaddrs* list = nullptr;
+  if (getifaddrs(&list) != 0) {
+    return out;
+  }
+  for (ifaddrs* ifa = list; ifa; ifa = ifa->ifa_next) {
+    if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET ||
+        (ifa->ifa_flags & IFF_LOOPBACK) || !(ifa->ifa_flags & IFF_UP)) {
+      continue;
+    }
+    char ip[INET_ADDRSTRLEN] = "", bcast[INET_ADDRSTRLEN] = "";
+    inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(ifa->ifa_addr)->sin_addr,
+              ip, sizeof(ip));
+    if ((ifa->ifa_flags & IFF_BROADCAST) && ifa->ifa_broadaddr) {
+      inet_ntop(AF_INET,
+                &reinterpret_cast<sockaddr_in*>(ifa->ifa_broadaddr)->sin_addr,
+                bcast, sizeof(bcast));
+    }
+    out.emplace_back(ip, bcast);
+  }
+  freeifaddrs(list);
+  return out;
+}
+
+std::string jsonString(const std::string& s) {
+  std::string out = "\"";
+  for (unsigned char c : s) {
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += static_cast<char>(c);
+    } else if (c < 0x20) {
+      char buf[8];
+      snprintf(buf, sizeof(buf), "\\u%04x", c);
+      out += buf;
+    } else {
+      out += static_cast<char>(c);
+    }
+  }
+  return out + "\"";
+}
+
+/// The devices seen on the network: phones announcing themselves (and their
+/// shares), computers running awdt (answering discovery)
+class Hub {
+ public:
+  void phone(const std::string& address, const std::string& name, int sharePort,
+             const std::string& shareKey) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Device& d = devices_["phone " + address];
+    d = {name, address, "phone", sharePort, shareKey, false, Clock::now()};
+  }
+
+  void computer(const std::string& address, const std::string& name,
+                bool autoAccept) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Device& d = devices_["computer " + address];
+    d = {name, address, "computer", 0, "", autoAccept, Clock::now()};
+  }
+
+  std::string json(const std::string& hubName) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const Clock::time_point now = Clock::now();
+    std::string out = "{\"hub\":" + jsonString(hubName) + ",\"devices\":[";
+    bool first = true;
+    for (auto it = devices_.begin(); it != devices_.end();) {
+      const Device& d = it->second;
+      // phones announce every few seconds, computers answer every 10 s
+      const auto ttl = std::chrono::seconds(d.kind == "phone" ? 12 : 35);
+      if (now - d.seen > ttl) {
+        it = devices_.erase(it);
+        continue;
+      }
+      out += first ? "" : ",";
+      first = false;
+      out += "{\"name\":" + jsonString(d.name) +
+             ",\"address\":" + jsonString(d.address) +
+             ",\"kind\":" + jsonString(d.kind);
+      if (d.kind == "phone") {
+        out += ",\"share\":" +
+               (d.sharePort > 0 ? jsonString("http://" + d.address + ":" +
+                                             std::to_string(d.sharePort) + "/" +
+                                             d.shareKey + "/")
+                                : std::string("null"));
+      } else {
+        out += std::string(",\"autoAccept\":") + (d.autoAccept ? "true" : "false");
+      }
+      out += "}";
+      ++it;
+    }
+    return out + "]}";
+  }
+
+ private:
+  using Clock = std::chrono::steady_clock;
+  struct Device {
+    std::string name;
+    std::string address;
+    std::string kind;  // "phone" or "computer"
+    int sharePort;
+    std::string shareKey;
+    bool autoAccept;
+    Clock::time_point seen;
+  };
+  std::mutex mutex_;
+  std::map<std::string, Device> devices_;
+};
+
+/// The words of an AWDT/1 message, after the tag; the last one (a name) may
+/// contain spaces
+std::vector<std::string> messageWords(const std::string& msg, size_t count) {
+  std::vector<std::string> words;
+  size_t pos = 0;
+  while (words.size() + 1 < count) {
+    size_t space = msg.find(' ', pos);
+    if (space == std::string::npos) {
+      break;
+    }
+    words.push_back(msg.substr(pos, space - pos));
+    pos = space + 1;
+  }
+  words.push_back(msg.substr(pos));
+  return words;
+}
+
+/// Discovery (answers), and for the hub, what the others broadcast
+void udpLoop(int fd, const ReceiveConfig& config, Hub* hub) {
   const std::string reply = std::string(kProtocol) + " HERE " +
                             std::to_string(config.port) + " " +
                             (config.autoAccept ? "1" : "0") + " " + config.name;
+  static const std::regex keyRe("^[0-9a-fA-F]{32}$");
   while (true) {
-    char buf[512];
+    char buf[1024];
     sockaddr_storage from{};
     socklen_t fromLen = sizeof(from);
     ssize_t n = recvfrom(fd, buf, sizeof(buf) - 1, 0,
@@ -551,9 +692,143 @@ void answerDiscovery(int fd, const ReceiveConfig& config) {
       continue;
     }
     std::string msg(buf, n);
-    if (msg.rfind(std::string(kProtocol) + " DISCOVER", 0) == 0) {
+    while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r')) {
+      msg.pop_back();
+    }
+    // AWDT/1 <verb> <args...>
+    std::vector<std::string> w = messageWords(msg, 5);
+    if (w.size() < 2 || w[0] != kProtocol) {
+      continue;
+    }
+    const std::string address = peerAddress(from);
+    if (w[1] == "DISCOVER") {
       sendto(fd, reply.data(), reply.size(), 0,
              reinterpret_cast<sockaddr*>(&from), fromLen);
+    } else if (!hub) {
+      continue;
+    } else if (w[1] == "HERE" && w.size() == 5) {  // HERE <port> <auto> <name>
+      bool self = false;
+      for (const auto& a : localAddresses()) {
+        self |= a.first == address;
+      }
+      if (!self) {
+        hub->computer(address, w[4], w[3] == "1");
+      }
+    } else if (w[1] == "ANNOUNCE" && w.size() == 5) {  // <port> <key|-> <name>
+      int port = 0;
+      try {
+        port = std::stoi(w[2]);
+      } catch (...) {
+        continue;
+      }
+      const bool sharing =
+          port > 0 && port < 65536 && std::regex_match(w[3], keyRe);
+      hub->phone(address, w[4], sharing ? port : 0, sharing ? w[3] : "");
+    }
+  }
+}
+
+/// Every 10 s, looks for the other computers running awdt
+void hubDiscovery(int fd, int port) {
+  int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
+  const std::string request = std::string(kProtocol) + " DISCOVER";
+  while (true) {
+    std::set<std::string> targets{"255.255.255.255"};
+    for (const auto& a : localAddresses()) {
+      if (!a.second.empty()) {
+        targets.insert(a.second);
+      }
+    }
+    for (const auto& t : targets) {
+      sockaddr_in to{};
+      to.sin_family = AF_INET;
+      to.sin_port = htons(port);
+      inet_pton(AF_INET, t.c_str(), &to.sin_addr);
+      sendto(fd, request.data(), request.size(), 0,
+             reinterpret_cast<sockaddr*>(&to), sizeof(to));
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+  }
+}
+
+void httpRespond(int fd, int status, const char* reason, const std::string& type,
+                 const std::string& body) {
+  std::string head = std::string("HTTP/1.1 ") + std::to_string(status) + " " +
+                     reason + "\r\nContent-Type: " + type +
+                     "\r\nContent-Length: " + std::to_string(body.size()) +
+                     "\r\nCache-Control: no-store"
+                     "\r\nX-Content-Type-Options: nosniff"
+                     "\r\nReferrer-Policy: no-referrer"
+                     // the page fetches the phones' file lists
+                     "\r\nContent-Security-Policy: default-src 'none'; "
+                     "script-src 'self'; style-src 'self'; img-src 'self' data:; "
+                     "connect-src 'self' http:; frame-ancestors 'none'"
+                     "\r\nConnection: close\r\n\r\n";
+  const std::string all = head + body;
+  size_t done = 0;
+  while (done < all.size()) {
+    ssize_t n = ::send(fd, all.data() + done, all.size() - done, MSG_NOSIGNAL);
+    if (n <= 0) {
+      return;
+    }
+    done += n;
+  }
+}
+
+/// The hub's page (desktop/hub, compiled in) and /devices.json
+void hubHttp(int fd, Hub* hub, std::string hubName) {
+  timeval tv{10, 0};
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  std::string request;
+  char buf[4096];
+  while (request.find("\r\n\r\n") == std::string::npos && request.size() < 16384) {
+    ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+    if (n <= 0) {
+      break;
+    }
+    request.append(buf, n);
+  }
+  std::istringstream line(request.substr(0, request.find("\r\n")));
+  std::string method, target;
+  line >> method >> target;
+  std::string path = target.substr(0, target.find('?'));
+  if (method != "GET" && method != "HEAD") {
+    httpRespond(fd, 405, "Method Not Allowed", "text/plain", "Method not allowed");
+  } else if (path == "/devices.json") {
+    httpRespond(fd, 200, "OK", "application/json", hub->json(hubName));
+  } else {
+    if (path == "/") {
+      path = "/index.html";
+    }
+    const HubFile* file = nullptr;
+    for (const HubFile& f : kHubFiles) {
+      if (path == std::string("/") + f.name) {
+        file = &f;
+      }
+    }
+    if (!file) {
+      httpRespond(fd, 404, "Not Found", "text/plain", "Not found");
+    } else {
+      const std::string name = file->name;
+      const std::string type =
+          name.size() > 5 && name.substr(name.size() - 5) == ".html"
+              ? "text/html; charset=utf-8"
+          : name.size() > 3 && name.substr(name.size() - 3) == ".js"
+              ? "text/javascript; charset=utf-8"
+              : "text/css; charset=utf-8";
+      httpRespond(fd, 200, "OK", type,
+                  std::string(reinterpret_cast<const char*>(file->data), file->size));
+    }
+  }
+  ::close(fd);
+}
+
+void hubServer(int tcp, Hub* hub, std::string hubName) {
+  while (true) {
+    int fd = ::accept(tcp, nullptr, nullptr);
+    if (fd >= 0) {
+      std::thread(hubHttp, fd, hub, hubName).detach();
     }
   }
 }
@@ -606,13 +881,28 @@ void handlePush(int fd, const std::string& from, const ReceiveConfig& config) {
 int cmdReceive(const ReceiveConfig& config) {
   int udp = listenOn(SOCK_DGRAM, config.port);
   int tcp = listenOn(SOCK_STREAM, config.port);
-  std::thread(answerDiscovery, udp, config).detach();
+  // Never destroyed: used by detached threads until the process exits
+  Hub* hub = nullptr;
+  if (config.hubPort > 0) {
+    int web = listenOn(SOCK_STREAM, config.hubPort);
+    hub = new Hub();
+    std::thread(hubServer, web, hub, config.name).detach();
+    std::thread(hubDiscovery, udp, config.port).detach();
+  }
+  std::thread(udpLoop, udp, config, hub).detach();
   std::cout << "awdt: receiving in " << config.folder.string() << " as \""
             << config.name << "\" (port " << config.port << ", "
             << (config.autoAccept ? "accepting everything" : "asking first")
             << ")." << std::endl
             << "In the WDT app: Send to a nearby device. Ctrl-C to stop."
             << std::endl;
+  if (hub) {
+    std::cout << "Hub page, listing the devices on the network:";
+    for (const auto& a : localAddresses()) {
+      std::cout << " http://" << a.first << ":" << config.hubPort;
+    }
+    std::cout << std::endl;
+  }
   while (true) {
     sockaddr_storage from{};
     socklen_t fromLen = sizeof(from);
@@ -673,7 +963,7 @@ void usage(std::ostream& out) {
   out << "awdt " << WDT_VERSION_STR
       << ": receive files from the WDT Android app on this network\n\n"
          "Usage:\n"
-         "  awdt receive <folder> [--auto-accept] [--name <name>] [--port <port>]\n"
+         "  awdt receive <folder> [--auto-accept] [--hub] [--name <name>] [--port <port>]\n"
          "      Waits for files sent with \"Send to a nearby device\" in the app,\n"
          "      and saves them in <folder>. Asks before each transfer, unless\n"
          "      --auto-accept (then anyone on the network can send files here).\n"
@@ -682,6 +972,8 @@ void usage(std::ostream& out) {
          "      folder: the current one).\n\n"
          "Options:\n"
          "  -v, --verbose   WDT's logs\n"
+         "  --hub           also serve a web page (port 22350, --hub-port <port>)\n"
+         "                  listing the devices on the network and their shares\n"
          "  --name <name>   shown in the app (default: this computer's name)\n"
          "  --port <port>   discovery and control port (default 22355; the app\n"
          "                  finds receivers on 22355). WDT itself uses 22356-22358\n"
@@ -712,6 +1004,7 @@ int main(int argc, char** argv) {
   bool autoAccept = false;
   std::string name = hostName();
   int port = kDefaultPort;
+  int hubPort = 0;
   std::vector<std::string> positional;
   try {
     for (size_t i = 0; i < args.size(); ++i) {
@@ -726,11 +1019,16 @@ int main(int argc, char** argv) {
         verbose = true;
       } else if (a == "--auto-accept" || a == "-y") {
         autoAccept = true;
-      } else if ((a == "--name" || a == "--port") && i + 1 < args.size()) {
+      } else if (a == "--hub") {
+        hubPort = hubPort ? hubPort : kDefaultHubPort;
+      } else if ((a == "--name" || a == "--port" || a == "--hub-port") &&
+                 i + 1 < args.size()) {
         if (a == "--name") {
           name = args[++i];
-        } else {
+        } else if (a == "--port") {
           port = std::stoi(args[++i]);
+        } else {
+          hubPort = std::stoi(args[++i]);
         }
       } else if (!a.empty() && a[0] == '-') {
         throw Error("unknown option " + a);
@@ -750,6 +1048,7 @@ int main(int argc, char** argv) {
       config.autoAccept = autoAccept;
       config.name = name;
       config.port = port;
+      config.hubPort = hubPort;
       return cmdReceive(config);
     }
     if ((positional.size() == 2 || positional.size() == 3) &&

@@ -37,6 +37,22 @@ same network.
 * To always be ready: `desktop/awdt.service` is a systemd user service (the
   instructions are at its top).
 
+## Hub: a page listing the devices on the network
+
+```sh
+awdt receive ~/Downloads/WDT --auto-accept --hub
+```
+
+also serves a page at `http://<this computer>:22350` (`--hub-port` to change
+it), for any browser on the network. It lists the phones with the WDT app
+open, and for the ones sharing files, their files, to download straight from
+the phones; and the other computers running `awdt`. The app announces itself
+while it's open or sharing (a UDP broadcast every few seconds, on port 22355);
+shares are listed unless "Show my shares to hubs on this network" is off in
+the app. Listed shares can be downloaded by anyone on the network.
+
+The page is in `desktop/hub` (compiled into `awdt`).
+
 ## Download a link shared from the phone
 
 When the app shares files with a link, open it in a browser, or download
@@ -49,8 +65,9 @@ awdt get http://192.168.1.34:40195/482a7b0c9f382014056844c752d3d08a ~/Downloads
 ## Firewall
 
 The phone connects to the computer: if you use a firewall, allow UDP port
-22355 (discovery) and TCP ports 22355-22358 (22356-22358 are WDT's), e.g.
-`sudo ufw allow 22355/udp && sudo ufw allow 22355:22358/tcp`. If the phone
+22355 (discovery) and TCP ports 22355-22358 (22356-22358 are WDT's), and 22350
+for the hub page, e.g.
+`sudo ufw allow 22355/udp && sudo ufw allow 22355:22358/tcp && sudo ufw allow 22350/tcp`. If the phone
 can't find the computer (some networks block broadcasts), type the computer's
 address in the app instead.
 

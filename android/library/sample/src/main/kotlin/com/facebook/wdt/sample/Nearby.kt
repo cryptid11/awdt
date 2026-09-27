@@ -86,7 +86,7 @@ object Nearby {
         return NearbyReceiver(from.hostAddress ?: return null, port, words[3] == "1", name)
     }
 
-    private fun broadcastAddresses(): List<InetAddress> {
+    internal fun broadcastAddresses(): List<InetAddress> {
         val subnets = try {
             NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
                 .filter { it.isUp && !it.isLoopback }
@@ -97,6 +97,66 @@ object Nearby {
             emptyList()
         }
         return (subnets + InetAddress.getByName("255.255.255.255")).distinct()
+    }
+}
+
+/**
+ * Tells hubs on the network (`awdt receive --hub`) that this device is here,
+ * and what it shares: a UDP broadcast every few seconds while [active] (the
+ * app is open) or sharing ([share] set).
+ */
+class Announcer(private val name: () -> String) {
+    @Volatile
+    var active = false
+
+    /** The share to announce, null if none (or not to be shown). */
+    @Volatile
+    var share: ShareLink? = null
+
+    private val lock = Object()
+    private var thread: Thread? = null
+
+    fun start() {
+        thread = Thread({ loop() }, "wdt-announce").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    fun stop() {
+        thread?.interrupt()
+        thread = null
+    }
+
+    /** Announces now (a share started or stopped). */
+    fun poke() = synchronized(lock) { lock.notifyAll() }
+
+    private fun loop() {
+        try {
+            DatagramSocket().use { socket ->
+                socket.broadcast = true
+                while (!Thread.currentThread().isInterrupted) {
+                    val s = share
+                    if (active || s != null) {
+                        val name = name().replace(Regex("\\s+"), " ").trim().ifEmpty { "Android" }
+                        val message = "$PROTOCOL ANNOUNCE ${s?.port ?: 0} ${s?.key?.toHex() ?: "-"} $name"
+                            .toByteArray()
+                        for (target in Nearby.broadcastAddresses()) {
+                            try {
+                                socket.send(DatagramPacket(message, message.size, target, NEARBY_PORT))
+                            } catch (e: Exception) {
+                                // this interface can't broadcast
+                            }
+                        }
+                    }
+                    synchronized(lock) { lock.wait(3000) }
+                }
+            }
+        } catch (e: InterruptedException) {
+            // stopped
+        } catch (e: Exception) {
+            // no network: nothing to announce to
+        }
     }
 }
 
