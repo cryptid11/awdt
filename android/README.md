@@ -131,6 +131,18 @@ directory trees, every encryption mode with checksums, file descriptors, file
 lists, aborts (including from a progress listener), `close()` while waiting,
 and error cases. `JavaApiTest` runs a transfer through the API from Java.
 
+### Automatic updates (Obtainium)
+
+Every build of `main` is published as a release `v1.0.<build number>`, whose
+APKs are signed with the project's release key. To get them automatically,
+install [Obtainium](https://github.com/ImranR98/Obtainium), then *Add app*:
+
+* App source URL: `https://github.com/cryptid11/awdt`
+* *Filter APKs by regular expression*: `arm64-v8a` (most phones)
+
+It checks for new releases and, on Android 12+, installs them in the
+background. The app id is `io.github.cryptid11.awdt`.
+
 ### CI
 
 `.github/workflows/android.yml` builds the AAR, the sample APKs (one per ABI
@@ -139,8 +151,13 @@ and uploads them as the `wdt-android` artifact. Pushes to `main` also update
 the `latest` pre-release, and `v*` tags get a release. The native dependencies
 are cached until `build-deps.sh` changes.
 
-The sample is signed with `sample/debug.keystore`, a public debug key, so that
-new builds install over older ones from any machine or CI run.
+Published builds are signed with the release key, from the repository
+secrets `AWDT_KEYSTORE_BASE64` (the PKCS12 keystore, base64), `AWDT_KEYSTORE_PASSWORD`
+and `AWDT_KEY_ALIAS`; locally, the same values in the environment variables
+`AWDT_KEYSTORE_FILE` (a path), `AWDT_KEYSTORE_PASSWORD` and `AWDT_KEY_ALIAS`.
+Without them, builds are signed with `sample/debug.keystore`, a public debug
+key: fine for testing, never publish those. The version code comes from
+`-Pwdt.versionCode` (CI: the build number).
 
 ### The sample app
 

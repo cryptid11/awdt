@@ -8,6 +8,15 @@ val wdtAbis: List<String> = providers.gradleProperty("wdt.abis")
     .map { it.split(",").map(String::trim).filter(String::isNotEmpty) }
     .getOrElse(listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86"))
 
+// Set by CI from its build number: every published build is newer, which is
+// how updaters (Obtainium, F-Droid clients...) find updates
+val wdtVersionCode: Int = providers.gradleProperty("wdt.versionCode").map(String::toInt).getOrElse(1)
+
+// The release key, from the environment (CI: the repository's secrets). Without
+// it, builds are signed with the public debug key below: fine for testing,
+// but never publish those (anyone could sign "updates" with that key)
+val releaseKeystore: String? = providers.environmentVariable("AWDT_KEYSTORE_FILE").orNull
+
 android {
     namespace = "com.facebook.wdt.sample"
     compileSdk = 35
@@ -15,11 +24,11 @@ android {
     ndkVersion = "27.3.13750724"
 
     defaultConfig {
-        applicationId = "com.facebook.wdt.sample"
+        applicationId = "io.github.cryptid11.awdt"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = wdtVersionCode
+        versionName = "1.0.$wdtVersionCode"
     }
 
     signingConfigs {
@@ -30,6 +39,14 @@ android {
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+        }
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = providers.environmentVariable("AWDT_KEYSTORE_PASSWORD").get()
+                keyAlias = providers.environmentVariable("AWDT_KEY_ALIAS").get()
+                keyPassword = storePassword // PKCS12 keystores: one password
+            }
         }
     }
 
@@ -44,10 +61,11 @@ android {
     }
 
     buildTypes {
-        // Minified like a real release (also checks the library's consumer
-        // ProGuard rules), but debug-signed so it installs without a key
+        // The published build: minified (which also checks the library's
+        // consumer ProGuard rules), signed with the release key when there's one
         create("minified") {
             initWith(getByName("debug"))
+            if (releaseKeystore != null) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isDebuggable = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))

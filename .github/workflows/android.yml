@@ -14,6 +14,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    outputs:
+      signed: ${{ steps.key.outputs.signed }}
     env:
       NDK_VERSION: 27.3.13750724
       CMAKE_VERSION: 3.22.1
@@ -44,9 +46,33 @@ jobs:
             _android/*/build/*.done
           key: wdt-android-deps-${{ env.NDK_VERSION }}-${{ hashFiles('android/build-deps.sh') }}
 
+      # The app's release key (repository secrets). Without it (forks, pull
+      # requests), the APKs are signed with the public debug key and no
+      # versioned release is published
+      - name: Release key
+        id: key
+        env:
+          KEYSTORE: ${{ secrets.AWDT_KEYSTORE_BASE64 }}
+          PASSWORD: ${{ secrets.AWDT_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.AWDT_KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "AWDT_KEYSTORE_FILE=$RUNNER_TEMP/release.jks"
+              echo "AWDT_KEYSTORE_PASSWORD=$PASSWORD"
+              echo "AWDT_KEY_ALIAS=$ALIAS"
+            } >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release key: debug-signed build"
+          fi
+
       - name: Build AAR and sample APKs
         working-directory: android/library
-        run: ./gradlew --no-daemon :wdt:assembleRelease :wdt:testReleaseUnitTest :sample:assembleMinified
+        run: >
+          ./gradlew --no-daemon -Pwdt.versionCode=${{ github.run_number }}
+          :wdt:assembleRelease :wdt:testReleaseUnitTest :sample:assembleMinified
 
       - name: Collect artifacts
         run: |
@@ -149,6 +175,23 @@ jobs:
             `wdt-sample-arm64-v8a.apk` is the sample app for most phones.
             `awdt-linux-x86_64` receives files from it on a Linux computer:
             `awdt receive ~/Downloads --auto-accept` (see desktop/README.md).
+          files: dist/*
+
+      # A full release per build: what updaters like Obtainium follow
+      - name: Publish versioned release
+        if: github.ref == 'refs/heads/main' && needs.build.outputs.signed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: WDT 1.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            Built from ${{ github.sha }}.
+            `wdt-sample-arm64-v8a.apk` is the app for most phones (app id
+            `io.github.cryptid11.awdt`); `awdt-linux-x86_64` receives files from it
+            on a Linux computer. To get updates automatically, add this repository
+            to Obtainium (see android/README.md).
           files: dist/*
 
       - name: Publish release
