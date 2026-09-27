@@ -30,7 +30,8 @@ import javax.crypto.KeyAgreement
 
 /*
  * Sending to a nearby receiver: a computer running `awdt receive <folder>`
- * (desktop/awdt.cpp, which documents the protocol).
+ * (desktop/awdt.cpp, which documents the protocol), or a phone with this app
+ * open (Peers.kt).
  *
  * Discovery: a UDP broadcast on port 22355, receivers answer with their name.
  * Push: over TCP to the receiver, both sides exchange P-256 public keys and
@@ -70,6 +71,7 @@ object Nearby {
                 } catch (e: SocketTimeoutException) {
                     break
                 }
+                if (packet.address.hostAddress in ownAddresses()) continue // this device
                 parseAnswer(packet.address, String(packet.data, 0, packet.length, Charsets.UTF_8))
                     ?.let { found["${it.host}:${it.port}"] = it }
             }
@@ -84,6 +86,17 @@ object Nearby {
         val port = words[2].toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
         val name = words.getOrNull(4)?.takeIf { it.isNotBlank() } ?: from.hostAddress ?: "?"
         return NearbyReceiver(from.hostAddress ?: return null, port, words[3] == "1", name)
+    }
+
+    /** This device's IPv4 addresses. */
+    fun ownAddresses(): Set<String> = try {
+        NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            .flatMap { it.inetAddresses.toList() }
+            .filterIsInstance<Inet4Address>()
+            .mapNotNull { it.hostAddress }
+            .toSet()
+    } catch (e: Exception) {
+        emptySet()
     }
 
     internal fun broadcastAddresses(): List<InetAddress> {

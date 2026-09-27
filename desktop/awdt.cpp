@@ -600,15 +600,23 @@ class Hub {
   void phone(const std::string& address, const std::string& name, int sharePort,
              const std::string& shareKey) {
     std::lock_guard<std::mutex> lock(mutex_);
+    devices_.erase("computer " + address);  // it answered discovery: see below
     Device& d = devices_["phone " + address];
-    d = {name, address, "phone", sharePort, shareKey, false, Clock::now()};
+    const bool receives = d.receives;
+    d = {name, address, "phone", sharePort, shareKey, false, receives, Clock::now()};
   }
 
   void computer(const std::string& address, const std::string& name,
                 bool autoAccept) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // Phones with the app open answer discovery too (they accept pushes)
+    auto phone = devices_.find("phone " + address);
+    if (phone != devices_.end()) {
+      phone->second.receives = true;
+      return;
+    }
     Device& d = devices_["computer " + address];
-    d = {name, address, "computer", 0, "", autoAccept, Clock::now()};
+    d = {name, address, "computer", 0, "", autoAccept, false, Clock::now()};
   }
 
   std::string json(const std::string& hubName) {
@@ -635,6 +643,7 @@ class Hub {
                                              std::to_string(d.sharePort) + "/" +
                                              d.shareKey + "/")
                                 : std::string("null"));
+        out += std::string(",\"receives\":") + (d.receives ? "true" : "false");
       } else {
         out += std::string(",\"autoAccept\":") + (d.autoAccept ? "true" : "false");
       }
@@ -653,6 +662,7 @@ class Hub {
     int sharePort;
     std::string shareKey;
     bool autoAccept;
+    bool receives;  // phones: accepting files from nearby devices
     Clock::time_point seen;
   };
   std::mutex mutex_;

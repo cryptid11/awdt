@@ -92,7 +92,8 @@ function otherCard(device) {
   const what = device.kind === "computer"
     ? "Computer running awdt: send it files with the WDT app" +
       (device.autoAccept ? "." : " (it asks before accepting).")
-    : "Phone with the WDT app, not sharing anything right now.";
+    : "Phone with the WDT app, not sharing anything right now" +
+      (device.receives ? ": send it files with the app (it asks first)." : ".");
   card.append(el("p", "muted", what));
   return card;
 }

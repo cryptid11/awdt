@@ -8,6 +8,7 @@
 package com.facebook.wdt.sample
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -18,6 +19,8 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Environment
 import android.net.wifi.WifiManager
 import android.os.ParcelFileDescriptor
@@ -58,7 +61,9 @@ import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 /**
@@ -103,6 +108,24 @@ class MainActivity : Activity() {
     private lateinit var progressText: TextView
     private lateinit var logView: TextView
     private lateinit var visibleCheck: CheckBox
+    private lateinit var receiveCheck: CheckBox
+    private lateinit var nearbySharesTitle: TextView
+    private lateinit var nearbySharesList: LinearLayout
+
+    /** Other phones: their shares, their discovery requests. */
+    private val listener = NearbyListener({ deviceName() }, { receiveCheck.isChecked })
+
+    /** Pushes from other devices, asking the user. */
+    private val pushServer = PushServer { onPush(it) }
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private val ui = Handler(Looper.getMainLooper())
+    private var shownShares = ""
+    private val refreshShares = object : Runnable {
+        override fun run() {
+            updateNearbyShares()
+            ui.postDelayed(this, 3000)
+        }
+    }
 
     /** Tells hubs on the network about this device and its share. */
     private val announcer = Announcer { deviceName() }
@@ -121,6 +144,29 @@ class MainActivity : Activity() {
         handleIntent(intent)
         searchNearby()
         announcer.start()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Listening while the app is visible: its shares, pushes (with a prompt)
+        multicastLock = applicationContext.getSystemService(WifiManager::class.java)
+            .createMulticastLock("wdt:discovery").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        if (!listener.start() || !pushServer.start()) {
+            log("Can't listen on port $NEARBY_PORT (another copy of this app?): other phones can't see this one")
+        }
+        ui.post(refreshShares)
+    }
+
+    override fun onStop() {
+        ui.removeCallbacks(refreshShares)
+        listener.close()
+        pushServer.close()
+        multicastLock?.release()
+        multicastLock = null
+        super.onStop()
     }
 
     override fun onResume() {
@@ -272,7 +318,8 @@ class MainActivity : Activity() {
                     })
                 }
                 nearbyStatus.text = if (found.isEmpty()) {
-                    "No computer found. On the computer, run:\n  awdt receive ~/Downloads --auto-accept"
+                    "Nothing found. On a computer, run: awdt receive ~/Downloads --auto-accept\n" +
+                        "On a phone: open this app (same Wi-Fi)."
                 } else {
                     ""
                 }
@@ -342,6 +389,77 @@ class MainActivity : Activity() {
     private fun deviceName(): String =
         Settings.Global.getString(contentResolver, "device_name")?.takeIf { it.isNotBlank() }
             ?: "${Build.MANUFACTURER} ${Build.MODEL}"
+
+    // ------------------------------------------------ receiving pushes
+
+    /** A device wants to send files here (on the push server's thread). */
+    private fun onPush(request: PushRequest) {
+        if (!receiveCheck.isChecked) return request.decline("this phone doesn't accept files")
+        if (stoppable != null) return request.decline("this phone is busy with another transfer")
+        val answered = CountDownLatch(1)
+        var accepted = false
+        var dialog: AlertDialog? = null
+        runOnUiThread {
+            dialog = AlertDialog.Builder(this)
+                .setTitle("Receive files?")
+                .setMessage(
+                    "${request.name} (${request.address}) wants to send you " +
+                        "${request.files} file(s), ${mb(request.bytes)}.",
+                )
+                .setPositiveButton("Accept") { _, _ ->
+                    accepted = stoppable == null
+                    if (accepted) setBusy()
+                    answered.countDown()
+                }
+                .setNegativeButton("Decline") { _, _ -> answered.countDown() }
+                .setOnCancelListener { answered.countDown() }
+                .show()
+        }
+        if (!answered.await(60, TimeUnit.SECONDS)) {
+            runOnUiThread { dialog?.dismiss() }
+        }
+        if (!accepted) {
+            request.decline("declined")
+            runOnUiThread { log("Declined files from ${request.name}") }
+            return
+        }
+        runOnUiThread { log("Receiving ${request.files} file(s), ${mb(request.bytes)} from ${request.name}...") }
+        val staging = freshDir(File(filesDir, "incoming-push"))
+        try {
+            val report = request.receive(staging, transferOptions().apply { progressReportIntervalMillis = 250 }, progressListener) {
+                stoppable = TransferStopper(it)
+            }
+            val saved = if (report.isSuccess) saveReceived(staging) else null
+            runOnUiThread {
+                logReport("Received from ${request.name}", report)
+                saved?.let { log(it) }
+            }
+        } catch (e: Exception) {
+            runOnUiThread { log("Receiving failed: ${e.message}") }
+        } finally {
+            staging.deleteRecursively()
+            runOnUiThread { setIdle() }
+        }
+    }
+
+    /** The shares of the phones nearby, to download. */
+    private fun updateNearbyShares() {
+        val shares = listener.nearbyShares()
+        val key = shares.joinToString { it.address + it.link }
+        if (key == shownShares) return
+        shownShares = key
+        nearbySharesList.removeAllViews()
+        for (share in shares) {
+            nearbySharesList.addView(
+                button("Download what ${share.name} shares") { startDownload(share.link) }.apply {
+                    isEnabled = stoppable == null
+                },
+            )
+        }
+        val any = shares.isNotEmpty()
+        nearbySharesTitle.visibility = if (any) View.VISIBLE else View.GONE
+        nearbySharesList.visibility = if (any) View.VISIBLE else View.GONE
+    }
 
     // --------------------------------------------------- download (receive)
 
@@ -762,7 +880,8 @@ class MainActivity : Activity() {
 
     private fun actionButtons(): List<View> =
         listOf(shareButton, downloadButton, computerButton, selfTestButton, searchButton, addressButton) +
-            (0 until nearbyList.childCount).map { nearbyList.getChildAt(it) }
+            (0 until nearbyList.childCount).map { nearbyList.getChildAt(it) } +
+            (0 until nearbySharesList.childCount).map { nearbySharesList.getChildAt(it) }
 
     /**
      * Wi-Fi can stall for seconds (power saving, interference): with WDT's
@@ -892,7 +1011,9 @@ class MainActivity : Activity() {
         addressView = text("", 14f, secondary = true).also { column.addView(it, margins(top = 4)) }
 
         column.addView(heading("Send"))
-        column.addView(text("To a computer on this network (running awdt):", 14f, secondary = true))
+        column.addView(
+            text("To a nearby device (a computer running awdt, or a phone with this app open):", 14f, secondary = true),
+        )
         nearbyList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         column.addView(nearbyList, margins(top = 4))
         nearbyStatus = text("", 13f, secondary = true).also { column.addView(it, margins(top = 4)) }
@@ -958,6 +1079,21 @@ class MainActivity : Activity() {
 
         column.addView(heading("Receive"))
         column.addView(text("Files are saved in Download/WDT.", 14f, secondary = true))
+        receiveCheck = CheckBox(this).apply {
+            text = "Let nearby devices send me files (you're asked each time)"
+            textSize = 13f
+            isChecked = prefs.getBoolean("accept_pushes", true)
+            setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("accept_pushes", checked).apply() }
+        }
+        column.addView(receiveCheck, margins(top = 4))
+        nearbySharesTitle = text("Shared by nearby phones:", 14f, secondary = true).apply { visibility = View.GONE }
+        column.addView(nearbySharesTitle, margins(top = 8))
+        nearbySharesList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        column.addView(nearbySharesList)
+        column.addView(text("Or open a link:", 14f, secondary = true), margins(top = 8))
         linkInput = EditText(this).apply {
             id = R.id.url_input // keeps the text across recreation
             hint = "Link from the other device (awdt://...)"

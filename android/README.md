@@ -178,6 +178,12 @@ releases). The devices need to be on the same network:
   * **in this app** (another phone): *Paste* it and tap *Download*, or tap
     *Open in the WDT app* on the page: faster, and encrypted, with WDT.
   * `awdt get <link>` on a computer, also with WDT.
+* **Phone to phone, without links**: while the app is open, it listens on the
+  network. Other phones with the app open appear under **Send** (like
+  computers running `awdt`): sending to one asks its user to accept. And the
+  phones sharing files appear under **Receive** ("Shared by nearby phones"),
+  to download with one tap. "Let nearby devices send me files" turns
+  receiving off. (Some networks filter broadcasts: then type an address.)
 * **Receive**: received files are saved in `Download/WDT`.
 * **Hubs**: while it's open or sharing, the app announces itself on the
   network, so computers running `awdt receive --hub` list it (and its share,

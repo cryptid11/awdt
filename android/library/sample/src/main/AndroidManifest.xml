@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Wi-Fi / wake locks: no radio power saving during transfers -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Multicast lock: some phones filter broadcasts (discovery) without it -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <application
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
