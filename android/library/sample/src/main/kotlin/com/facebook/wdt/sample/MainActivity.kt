@@ -34,6 +34,7 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -1048,7 +1049,18 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(16), dp(20), dp(24))
         }
-        column.addView(text("WDT", 30f, bold = true))
+        // Title, and the app's version on the right
+        column.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    text("WDT", 30f, bold = true),
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+                addView(text("v${appVersion()}", 13f, secondary = true, mono = true))
+            },
+        )
         column.addView(text("Warp speed Data Transfer, on the same Wi-Fi", 14f, secondary = true))
         addressView = text("", 14f, secondary = true).also { column.addView(it, margins(top = 4)) }
 
@@ -1255,6 +1267,13 @@ class MainActivity : Activity() {
         } else {
             linkInput.setText(Regex("""(?:a?wdt|http)://\S+""").find(value)?.value ?: value)
         }
+    }
+
+    /** The installed version (1.0.<build>, set by CI). */
+    private fun appVersion(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: PackageManager.NameNotFoundException) {
+        "?"
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
