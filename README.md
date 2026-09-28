@@ -4,6 +4,13 @@ This fork adds Android support to WDT: the `wdt` command line tool built with
 the NDK, and a Kotlin/Java library (AAR) with a sample app. See
 [android/README.md](android/README.md).
 
+[<img src="android/assets/badge_obtainium.png" alt="Get it on Obtainium" height="80">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.github.cryptid11.awdt%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2Fcryptid11%2Fawdt%22%2C%22author%22%3A%22cryptid11%22%2C%22name%22%3A%22WDT%22%2C%22preferredApkIndex%22%3A0%2C%22additionalSettings%22%3A%22%7B%5C%22includePrereleases%5C%22%3Afalse%2C%5C%22fallbackToOlderReleases%5C%22%3Atrue%2C%5C%22apkFilterRegEx%5C%22%3A%5C%22arm64-v8a%5C%22%7D%22%2C%22overrideSource%22%3Anull%7D)
+
+Tap the badge on your phone (with [Obtainium](https://github.com/ImranR98/Obtainium)
+installed) to add the app with the right settings: it then installs every new
+build automatically. For phones that aren't arm64 (rare), change "Filter APKs
+by regular expression" to `universal` after adding it.
+
 [![Android](https://github.com/cryptid11/awdt/actions/workflows/android.yml/badge.svg)](https://github.com/cryptid11/awdt/actions/workflows/android.yml)
 Builds from `main` are published as the
 [latest pre-release](https://github.com/cryptid11/awdt/releases/tag/latest):

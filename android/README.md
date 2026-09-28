@@ -135,10 +135,16 @@ and error cases. `JavaApiTest` runs a transfer through the API from Java.
 
 Every build of `main` is published as a release `v1.0.<build number>`, whose
 APKs are signed with the project's release key. To get them automatically,
-install [Obtainium](https://github.com/ImranR98/Obtainium), then *Add app*:
+install [Obtainium](https://github.com/ImranR98/Obtainium), then tap this on
+the phone:
+
+[<img src="assets/badge_obtainium.png" alt="Get it on Obtainium" height="80">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.github.cryptid11.awdt%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2Fcryptid11%2Fawdt%22%2C%22author%22%3A%22cryptid11%22%2C%22name%22%3A%22WDT%22%2C%22preferredApkIndex%22%3A0%2C%22additionalSettings%22%3A%22%7B%5C%22includePrereleases%5C%22%3Afalse%2C%5C%22fallbackToOlderReleases%5C%22%3Atrue%2C%5C%22apkFilterRegEx%5C%22%3A%5C%22arm64-v8a%5C%22%7D%22%2C%22overrideSource%22%3Anull%7D)
+
+It adds the app with these settings (or do it by hand with *Add app*):
 
 * App source URL: `https://github.com/cryptid11/awdt`
-* *Filter APKs by regular expression*: `arm64-v8a` (most phones)
+* *Filter APKs by regular expression*: `arm64-v8a` (most phones; `universal`
+  for the others)
 
 It checks for new releases and, on Android 12+, installs them in the
 background. The app id is `io.github.cryptid11.awdt`.
