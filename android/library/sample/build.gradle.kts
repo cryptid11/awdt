@@ -90,4 +90,5 @@ android {
 
 dependencies {
     implementation(project(":wdt"))
+    testImplementation("junit:junit:4.13.2")
 }

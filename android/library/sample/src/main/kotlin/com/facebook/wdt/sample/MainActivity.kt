@@ -7,8 +7,10 @@
  */
 package com.facebook.wdt.sample
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.pm.PackageManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -144,6 +146,8 @@ class MainActivity : Activity() {
         handleIntent(intent)
         searchNearby()
         announcer.start()
+        // the notification's Stop button
+        TransferService.onStop = { stoppable?.let { s -> executor.execute { s.close() } } }
     }
 
     override fun onStart() {
@@ -193,8 +197,11 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         announcer.stop()
-        // may wait for a transfer to stop: not on the UI thread
+        // Closed for good (swiped away from the recent apps): the transfer ends.
+        // May wait for it to stop: not on the UI thread
         stoppable?.let { executor.execute { it.close() } }
+        TransferService.onStop = null
+        TransferService.stop(this)
         executor.shutdown()
         super.onDestroy()
     }
@@ -217,7 +224,7 @@ class MainActivity : Activity() {
             return
         }
         warnIfNotWifi(address)
-        setBusy()
+        setBusy("Sharing ${uris.size} file(s)")
         executor.execute {
             val sources = try {
                 openSources(uris)
@@ -349,7 +356,7 @@ class MainActivity : Activity() {
     }
 
     private fun push(target: NearbyReceiver, uris: List<Uri>) {
-        setBusy()
+        setBusy("Sending ${uris.size} file(s) to ${target.name}")
         log("Connecting to $target...")
         val push = Push(target)
         stoppable = push
@@ -408,7 +415,7 @@ class MainActivity : Activity() {
                 )
                 .setPositiveButton("Accept") { _, _ ->
                     accepted = stoppable == null
-                    if (accepted) setBusy()
+                    if (accepted) setBusy("Receiving from ${request.name}")
                     answered.countDown()
                 }
                 .setNegativeButton("Decline") { _, _ -> answered.countDown() }
@@ -481,7 +488,7 @@ class MainActivity : Activity() {
     }
 
     private fun startDownload(link: ShareLink) {
-        setBusy()
+        setBusy("Receiving from ${link.host}")
         log("Connecting to ${link.host}...")
         val download = ShareDownload(link)
         stoppable = download
@@ -575,7 +582,7 @@ class MainActivity : Activity() {
         Log.i(TAG, "Receiver URL: $url")
         computerUrlView.text = url
         computerPanel.visibility = View.VISIBLE
-        setBusy()
+        setBusy("Waiting for the computer to send")
         stoppable = TransferStopper(receiver)
         log("Waiting for wdt on the computer (10 min)...")
         executor.execute {
@@ -594,7 +601,7 @@ class MainActivity : Activity() {
 
     /** Sends to a `wdt` receiver, given the wdt:// URL it printed. */
     private fun sendToComputer(url: String, uris: List<Uri>) {
-        setBusy()
+        setBusy("Sending ${uris.size} file(s)")
         log("Sending ${uris.size} file(s)...")
         executor.execute {
             try {
@@ -623,7 +630,7 @@ class MainActivity : Activity() {
 
     /** Shares 20 MB through a share link on this device and downloads it. */
     private fun selfTest() {
-        setBusy()
+        setBusy("Self-test")
         log("Self-test: sharing 20 MB and downloading it on this device...")
         executor.execute {
             val src = freshDir(File(cacheDir, "selftest-src"))
@@ -853,21 +860,29 @@ class MainActivity : Activity() {
 
     private fun showProgress(p: TransferProgress) = showBytes(p.bytesTransferred, p.totalBytes, p.isDone)
 
-    private fun showBytes(bytes: Long, total: Long, done: Boolean) = runOnUiThread {
+    /** Progress, from the transfer's thread (measured here: see SpeedMeter). */
+    private fun showBytes(bytes: Long, total: Long, done: Boolean) {
         val speed = speedMeter.update(bytes)
         val rate = if (speed > 0) "  ·  %.1f MB/s".format(speed) else ""
-        if (total > 0) {
-            progressBar.isIndeterminate = false
-            progressBar.progress = (bytes * 100 / total).toInt()
+        val percent = if (total > 0) (bytes * 100 / total).toInt() else -1
+        val text = if (total > 0) {
             val left = if (speed > 0.05 && !done) {
                 val seconds = ((total - bytes) / 1e6 / speed).toInt()
                 "  ·  %d:%02d left".format(seconds / 60, seconds % 60)
             } else {
                 ""
             }
-            progressText.text = "%s / %s%s%s".format(mb(bytes), mb(total), rate, left)
+            "%s / %s%s%s".format(mb(bytes), mb(total), rate, left)
         } else {
-            progressText.text = mb(bytes) + rate
+            mb(bytes) + rate
+        }
+        TransferService.progress(this, text, percent)
+        runOnUiThread {
+            if (percent >= 0) {
+                progressBar.isIndeterminate = false
+                progressBar.progress = percent
+            }
+            progressText.text = text
         }
     }
 
@@ -912,7 +927,11 @@ class MainActivity : Activity() {
             .apply { setReferenceCounted(false) }
     }
 
-    private fun setBusy() {
+    /** A transfer starts; [what] is shown in its notification. */
+    private fun setBusy(what: String = "WDT transfer") {
+        // keeps going in the background, with a progress notification
+        TransferService.start(this, what)
+        askNotificationPermission()
         wifiLock.acquire()
         wakeLock.acquire(60 * 60 * 1000L) // released when idle; at most an hour
         for (b in actionButtons()) b.isEnabled = false
@@ -924,7 +943,29 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
+    /** Android 13+: the progress notification needs the user's OK (asked once). */
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        if (prefs.getBoolean("asked_notifications", false)) return
+        prefs.edit().putBoolean("asked_notifications", true).apply()
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), ASK_NOTIFICATIONS)
+    }
+
+    /** Back during a transfer: to the background (it goes on), not closed. */
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (stopButton.visibility == View.VISIBLE) {
+            moveTaskToBack(true)
+        } else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        }
+    }
+
     private fun setIdle() {
+        TransferService.stop(this)
         stoppable = null
         if (wifiLock.isHeld) wifiLock.release()
         if (wakeLock.isHeld) wakeLock.release()
@@ -939,12 +980,13 @@ class MainActivity : Activity() {
         if (report.isSuccess) {
             // only the sender counts files
             val files = if (report.numFiles > 0) "${report.numFiles} file(s), " else ""
-            log(
-                "$what: $files${mb(report.bytesTransferred)} in " +
-                    "%.1f s (%.1f MB/s)".format(report.totalTimeSeconds, report.throughputMBps),
-            )
+            val summary = "$files${mb(report.bytesTransferred)} in " +
+                "%.1f s (%.1f MB/s)".format(report.totalTimeSeconds, report.throughputMBps)
+            log("$what: $summary")
+            TransferService.done(this, what, summary)
         } else {
             log("$what: failed, ${report.errorCode}")
+            TransferService.done(this, "$what: failed", report.errorCode.toString())
             if (report.failedFiles.isNotEmpty()) log("  failed: ${report.failedFiles.joinToString()}")
         }
     }
@@ -1257,6 +1299,7 @@ class MainActivity : Activity() {
         const val PICK_TO_SHARE = 0
         const val PICK_TO_SEND_TO_COMPUTER = 1
         const val PICK_TO_PUSH = 2
+        const val ASK_NOTIFICATIONS = 2
         const val RANK_HOTSPOT = 2
     }
 }

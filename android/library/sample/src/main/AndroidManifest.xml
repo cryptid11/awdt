@@ -4,6 +4,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Multicast lock: some phones filter broadcasts (discovery) without it -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Transfers keep running in the background (TransferService) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- The progress notification (Android 13+ asks the user, once) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -37,5 +42,10 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".TransferService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="true" />
     </application>
 </manifest>

@@ -190,6 +190,10 @@ releases). The devices need to be on the same network:
   phones sharing files appear under **Receive** ("Shared by nearby phones"),
   to download with one tap. "Let nearby devices send me files" turns
   receiving off. (Some networks filter broadcasts: then type an address.)
+* **Transfers run in the background** (a foreground service), with a
+  progress notification like a download, a Stop button, and a notification
+  when done. Swiping the app away from the recent apps stops them. Android 13+
+  asks once to allow the notifications.
 * **Receive**: received files are saved in `Download/WDT`.
 * **Hubs**: while it's open or sharing, the app announces itself on the
   network, so computers running `awdt receive --hub` list it (and its share,

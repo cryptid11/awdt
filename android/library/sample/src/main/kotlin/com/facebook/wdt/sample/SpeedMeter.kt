@@ -18,12 +18,24 @@ class SpeedMeter(private val windowMs: Long = 3000) {
     private val times = ArrayDeque<Long>()
     private val amounts = ArrayDeque<Long>()
 
-    /** Records [bytes] transferred so far; returns the speed in MB/s. */
+    /**
+     * Records [bytes] transferred so far; returns the speed in MB/s. Call it
+     * where the progress happens, not after a hop to the UI thread: there,
+     * updates can arrive late and in bursts (in the background especially).
+     */
+    @Synchronized
     fun update(bytes: Long, nowMs: Long = SystemClock.elapsedRealtime()): Double {
         if (amounts.isNotEmpty() && bytes < amounts.last()) reset() // a new transfer
-        times.addLast(nowMs)
-        amounts.addLast(bytes)
-        while (times.size > 2 && nowMs - times.first() > windowMs) {
+        // Only when the amount changes: WDT counts whole blocks (up to 16 MB),
+        // so the amount can stay the same for seconds on a slow network; the
+        // speed is then measured from the last changes to now (and decreases)
+        if (amounts.isEmpty() || bytes != amounts.last()) {
+            times.addLast(nowMs)
+            amounts.addLast(bytes)
+        }
+        // Keep one sample from before the window: the average then always
+        // spans the whole window (never only samples taken at the same time)
+        while (times.size > 2 && nowMs - times[1] >= windowMs) {
             times.removeFirst()
             amounts.removeFirst()
         }
@@ -31,6 +43,7 @@ class SpeedMeter(private val windowMs: Long = 3000) {
         return if (ms < 500) 0.0 else (bytes - amounts.first()) / 1e3 / ms
     }
 
+    @Synchronized
     fun reset() {
         times.clear()
         amounts.clear()
