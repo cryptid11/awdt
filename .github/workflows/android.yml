@@ -194,6 +194,15 @@ jobs:
             to Obtainium (see android/README.md).
           files: dist/*
 
+      - name: Tell Obtainium about the release
+        if: github.ref == 'refs/heads/main' && needs.build.outputs.signed == 'true'
+        continue-on-error: true
+        env:
+          OBTAINIUM_PUSH_URL: ${{ secrets.OBTAINIUM_PUSH_URL }}
+        run: |
+          [ -n "$OBTAINIUM_PUSH_URL" ] || exit 0
+          curl -fsS -d "https://github.com/${{ github.repository }}" "$OBTAINIUM_PUSH_URL"
+
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
