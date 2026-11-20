@@ -190,6 +190,10 @@ releases). The devices need to be on the same network:
   phones sharing files appear under **Receive** ("Shared by nearby phones"),
   to download with one tap. "Let nearby devices send me files" turns
   receiving off. (Some networks filter broadcasts: then type an address.)
+* **On a phone's hotspot**: the other phone (or a computer) connects to it.
+  It works even without internet on the hotspot: Android would then send the
+  app's connections over mobile data, so the app sends them through the
+  hotspot's Wi-Fi (`Lan.kt`).
 * **Transfers run in the background** (a foreground service), with a
   progress notification like a download, a Stop button, and a notification
   when done. Swiping the app away from the recent apps stops them. Android 13+

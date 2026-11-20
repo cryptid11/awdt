@@ -98,7 +98,18 @@ class NearbyListener(
                     val n = name().replace(Regex("\\s+"), " ").trim().ifEmpty { "Android" }
                     val reply = "$PROTOCOL HERE $NEARBY_PORT 0 $n".toByteArray()
                     try {
-                        s.send(DatagramPacket(reply, reply.size, packet.address, packet.port))
+                        val to = DatagramPacket(reply, reply.size, packet.address, packet.port)
+                        val host = packet.address.hostAddress ?: ""
+                        if (Lan.networkFor(host) == null) {
+                            s.send(to)
+                        } else {
+                            // a hotspot without internet: answer through it, not over
+                            // mobile data (this socket listens on every network)
+                            DatagramSocket().use { d ->
+                                Lan.bind(d, host)
+                                d.send(to)
+                            }
+                        }
                     } catch (e: Exception) {
                         // gone
                     }

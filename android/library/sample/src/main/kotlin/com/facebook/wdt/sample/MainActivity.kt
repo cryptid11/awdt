@@ -60,6 +60,7 @@ import java.io.File
 import java.net.ConnectException
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.net.NoRouteToHostException
 import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -142,6 +143,7 @@ class MainActivity : Activity() {
         val root = buildUi()
         setContentView(root)
         applySystemBarInsets(root) // needs the window's decor: after setContentView
+        Lan.init(this)
         log("WDT ${Wdt.version}, protocol ${Wdt.protocolVersion}")
         showAddress()
         handleIntent(intent)
@@ -178,6 +180,7 @@ class MainActivity : Activity() {
         super.onResume()
         announcer.active = true
         announcer.poke()
+        showAddress() // a hotspot turned on meanwhile...
     }
 
     override fun onPause() {
@@ -359,6 +362,7 @@ class MainActivity : Activity() {
     private fun push(target: NearbyReceiver, uris: List<Uri>) {
         setBusy("Sending ${uris.size} file(s) to ${target.name}")
         log("Connecting to $target...")
+        Lan.describe(target.host)?.let { log(it) }
         val push = Push(target)
         stoppable = push
         executor.execute {
@@ -383,8 +387,8 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {
                 val message = when (e) {
-                    is ConnectException, is SocketTimeoutException ->
-                        "Can't reach ${target.host}. Is awdt running there, on the same network?"
+                    is ConnectException, is NoRouteToHostException, is SocketTimeoutException ->
+                        "Can't reach ${target.host} (${e.message}). Is the app (or awdt) open there, on the same network?"
                     else -> e.message ?: e.toString()
                 }
                 runOnUiThread { log("Send failed: $message") }
@@ -491,6 +495,7 @@ class MainActivity : Activity() {
     private fun startDownload(link: ShareLink) {
         setBusy("Receiving from ${link.host}")
         log("Connecting to ${link.host}...")
+        Lan.describe(link.host)?.let { log(it) }
         val download = ShareDownload(link)
         stoppable = download
         val staging = freshDir(File(filesDir, "incoming"))
@@ -510,8 +515,8 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {
                 val message = when (e) {
-                    is ConnectException, is SocketTimeoutException ->
-                        "Can't reach ${link.host}. Is it still sharing, on the same Wi-Fi?"
+                    is ConnectException, is NoRouteToHostException, is SocketTimeoutException ->
+                        "Can't reach ${link.host} (${e.message}). Is it still sharing, on the same Wi-Fi?"
                     else -> e.message ?: e.toString()
                 }
                 runOnUiThread { log("Download failed: $message") }
@@ -608,10 +613,14 @@ class MainActivity : Activity() {
             try {
                 openSources(uris).use { sources ->
                     val options = transferOptions().apply { progressReportIntervalMillis = 250 }
-                    WdtSender(url, sources.directory, options, sources.files).use { sender ->
-                        stoppable = TransferStopper(sender)
-                        val report = sender.transfer(progressListener)
-                        runOnUiThread { logReport("Sent", report) }
+                    // the receiver's host: WDT's connections go there
+                    val host = Regex("""^wdt://(\[[0-9a-fA-F:.%]+]|[^:/?\[]+)""").find(url)?.groupValues?.get(1) ?: ""
+                    Lan.withProcessNetwork(host.trim('[', ']')) {
+                        WdtSender(url, sources.directory, options, sources.files).use { sender ->
+                            stoppable = TransferStopper(sender)
+                            val report = sender.transfer(progressListener)
+                            runOnUiThread { logReport("Sent", report) }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -1004,13 +1013,14 @@ class MainActivity : Activity() {
 
     private data class LocalAddress(val iface: String, val ip: String, val rank: Int)
 
-    /** IPv4 addresses of this device, Wi-Fi first. */
+    /** IPv4 addresses of this device, Wi-Fi first, then the hotspot's. */
     private fun localAddresses(): List<LocalAddress> = try {
+        val kinds = Lan.interfaceKinds()
         NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
             .filter { it.isUp && !it.isLoopback }
             .flatMap { iface ->
                 iface.inetAddresses.toList().filterIsInstance<Inet4Address>().map {
-                    LocalAddress(iface.name, it.hostAddress!!, rank(iface.name))
+                    LocalAddress(iface.name, it.hostAddress!!, rank(iface.name, kinds))
                 }
             }
             .sortedBy { it.rank }
@@ -1018,11 +1028,27 @@ class MainActivity : Activity() {
         emptyList()
     }
 
-    private fun rank(iface: String) = when {
-        iface.startsWith("wlan") -> 0
-        iface.startsWith("eth") -> 1
-        iface.startsWith("ap") || iface.startsWith("swlan") -> RANK_HOTSPOT
-        else -> 3 // mobile data, VPN...: usually not reachable by the other device
+    /**
+     * The networks' interfaces by their type; the others are this device's
+     * hotspot (wlan1, ap0, swlan0, softap0... depending on the phone), USB or
+     * Bluetooth tethering, Wi-Fi Direct: its devices reach this one there.
+     */
+    private fun rank(iface: String, kinds: Map<String, Lan.Kind>) = when (kinds[iface]) {
+        Lan.Kind.WIFI -> 0
+        Lan.Kind.ETHERNET -> 1
+        Lan.Kind.OTHER -> 3 // mobile data, VPN...: usually not reachable by the other device
+        null -> when {
+            kinds.isEmpty() -> when { // no network state: by name
+                iface.startsWith("wlan") -> 0
+                iface.startsWith("eth") -> 1
+                iface.startsWith("ap") || iface.contains("swlan") || iface.startsWith("softap") -> RANK_HOTSPOT
+                else -> 3
+            }
+            // mobile data's IPv4 over IPv6 (v4-rmnet...), tunnels
+            iface.startsWith("v4-") || iface.startsWith("rmnet") || iface.startsWith("ccmni") ||
+                iface.startsWith("tun") || iface.startsWith("ppp") || iface.startsWith("dummy") -> 3
+            else -> RANK_HOTSPOT
+        }
     }
 
     private fun preferredAddress() = localAddresses().firstOrNull()

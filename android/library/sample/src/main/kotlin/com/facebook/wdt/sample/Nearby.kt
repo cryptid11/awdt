@@ -207,6 +207,7 @@ class Push(private val target: NearbyReceiver) : AutoCloseable {
         Socket().use { s ->
             socket = s
             if (closed) throw ShareException("Stopped")
+            Lan.bind(s, target.host) // a hotspot without internet: not over mobile data
             s.connect(InetSocketAddress(target.host, target.port), 10_000)
             // the receiver may ask its user first (up to a minute)
             s.soTimeout = 90_000
@@ -230,10 +231,13 @@ class Push(private val target: NearbyReceiver) : AutoCloseable {
         }
         onAccepted()
         val url = senderUrl(receiverUrl, target.host, key)
-        WdtSender(url, directory, options, files).use { s ->
-            sender = s
-            if (closed) s.abort()
-            return s.transfer(progress)
+        // WDT's own (native) connections too
+        return Lan.withProcessNetwork(target.host) {
+            WdtSender(url, directory, options, files).use { s ->
+                sender = s
+                if (closed) s.abort()
+                s.transfer(progress)
+            }
         }
     }
 

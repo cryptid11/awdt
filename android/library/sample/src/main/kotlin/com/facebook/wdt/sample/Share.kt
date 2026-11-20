@@ -283,6 +283,7 @@ class ShareDownload(private val link: ShareLink) : AutoCloseable {
         Socket().use { socket ->
             this.socket = socket
             if (closed) throw ShareException("Stopped")
+            Lan.bind(socket, link.host) // a hotspot without internet: not over mobile data
             socket.connect(InetSocketAddress(link.host, link.port), 10_000)
             socket.soTimeout = 30_000
             val conn = LineConnection(socket)
